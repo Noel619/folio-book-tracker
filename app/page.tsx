@@ -95,6 +95,7 @@ type RecommendationMode = "basic" | "local-ai";
 type RecommendationDiversity = "focused" | "balanced" | "broad";
 type ListDisplayChoice = "grid" | "compact";
 type ListSortChoice = "manual" | "title" | "rating";
+type ExtensionIconChoice = "focus" | "gallery" | "compact" | "night" | "code";
 
 type CustomList = {
   id: string;
@@ -109,6 +110,9 @@ type CustomList = {
 type FolioExtension = {
   id: string;
   name: string;
+  description?: string;
+  icon?: ExtensionIconChoice;
+  builtIn?: boolean;
   enabled: boolean;
   css: string;
   script: string;
@@ -221,12 +225,123 @@ const DEFAULT_SETTINGS: AppSettings = {
 const EMPTY_EXTENSION_DRAFT: FolioExtension = {
   id: "",
   name: "",
+  description: "",
+  icon: "code",
+  builtIn: false,
   enabled: true,
   css: "",
   script: "",
   createdAt: 0,
   updatedAt: 0,
 };
+
+const BUILT_IN_EXTENSIONS: FolioExtension[] = [
+  {
+    id: "builtin-reading-room",
+    name: "Sala de lectura",
+    description: "Reduce el ruido visual y centra la atención en títulos, portadas y progreso.",
+    icon: "focus",
+    builtIn: true,
+    enabled: false,
+    css: `.app-shell .sidebar-note,
+.app-shell .profile-pill > span,
+.app-shell .section-count,
+.app-shell .book-card-meta { opacity: .3; }
+.app-shell .main-content { width: min(100%, 1320px); }
+.app-shell .content-section { margin-bottom: 72px; }
+.app-shell .section-heading { border-bottom: 1px solid var(--line-soft); padding-bottom: 13px; }`,
+    script: "",
+    createdAt: 1,
+    updatedAt: 1,
+  },
+  {
+    id: "builtin-cover-gallery",
+    name: "Galería de portadas",
+    description: "Convierte las cubiertas en protagonistas con profundidad, luz y movimiento suave.",
+    icon: "gallery",
+    builtIn: true,
+    enabled: false,
+    css: `.app-shell .book-card .book-cover,
+.app-shell .recommendation-card .book-cover,
+.app-shell .reading-card .book-cover {
+  box-shadow: 0 22px 55px rgba(0, 0, 0, .48), 0 0 0 1px rgba(255, 255, 255, .06);
+  transition: transform 420ms cubic-bezier(.16, 1, .3, 1), filter 420ms ease, box-shadow 420ms ease;
+}
+.app-shell .book-card:hover .book-cover,
+.app-shell .recommendation-card:hover .book-cover,
+.app-shell .reading-card:hover .book-cover {
+  transform: translateY(-7px) scale(1.025);
+  filter: brightness(1.08) saturate(1.12);
+  box-shadow: 0 30px 70px rgba(0, 0, 0, .58), 0 0 28px var(--accent-soft);
+}`,
+    script: "",
+    createdAt: 2,
+    updatedAt: 2,
+  },
+  {
+    id: "builtin-compact-library",
+    name: "Biblioteca compacta",
+    description: "Muestra más títulos a la vez, ideal para bibliotecas con cientos o miles de libros.",
+    icon: "compact",
+    builtIn: true,
+    enabled: false,
+    css: `.app-shell .book-grid,
+.app-shell .search-grid { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 25px 14px; }
+.app-shell .cover-shell { height: auto; aspect-ratio: 2 / 3; margin-bottom: 9px; }
+.app-shell .book-card-title { margin-bottom: 4px; font-size: 11px; }
+.app-shell .book-card-author,
+.app-shell .book-card-meta { font-size: 8px; }
+@media (max-width: 680px) {
+  .app-shell .book-grid,
+  .app-shell .search-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px 10px; }
+}`,
+    script: "",
+    createdAt: 3,
+    updatedAt: 3,
+  },
+  {
+    id: "builtin-night-ink",
+    name: "Tinta nocturna",
+    description: "Una variante negra con matices salvia y paneles suaves para sesiones nocturnas.",
+    icon: "night",
+    builtIn: true,
+    enabled: false,
+    css: `.app-shell {
+  --page: #050706 !important;
+  --workspace-background: #050706 !important;
+  --sidebar: #080b09 !important;
+  --panel: #0d110f !important;
+  --panel-2: #121814 !important;
+  --panel-3: #19201b !important;
+  --line: #253028 !important;
+  --line-soft: #18211b !important;
+  --accent: #9bc7a5 !important;
+  --accent-soft: rgba(155, 199, 165, .13) !important;
+  --accent-border: rgba(155, 199, 165, .34) !important;
+}
+.app-shell .workspace { background-image: radial-gradient(circle at 72% 16%, rgba(88, 126, 96, .08), transparent 31%); }`,
+    script: "",
+    createdAt: 4,
+    updatedAt: 4,
+  },
+];
+
+const BUILT_IN_EXTENSION_IDS = new Set(BUILT_IN_EXTENSIONS.map((extension) => extension.id));
+
+function mergeBuiltInExtensions(value: unknown): FolioExtension[] {
+  const stored = Array.isArray(value)
+    ? value.filter((extension): extension is FolioExtension => Boolean(extension && typeof extension === "object" && typeof extension.id === "string"))
+    : [];
+  const storedById = new Map(stored.map((extension) => [extension.id, extension]));
+  const builtIns = BUILT_IN_EXTENSIONS.map((extension) => ({
+    ...extension,
+    enabled: storedById.get(extension.id)?.enabled === true,
+  }));
+  const custom = stored
+    .filter((extension) => !BUILT_IN_EXTENSION_IDS.has(extension.id))
+    .map((extension) => ({ ...extension, icon: extension.icon || "code" as const, builtIn: false }));
+  return [...builtIns, ...custom];
+}
 
 const EXTENSION_SETTING_VALUES: Partial<Record<keyof AppSettings, readonly unknown[]>> = {
   font: ["sans", "serif", "rounded"],
@@ -337,6 +452,20 @@ function SettingPreview({ kind, label }: { kind: string; label?: string }) {
       <p>{locations[kind] || "La vista cambia al seleccionar cada opción."}</p>
     </div>
   );
+}
+
+const EXTENSION_ICON_COMPONENTS: Record<ExtensionIconChoice, typeof Code2> = {
+  focus: Eye,
+  gallery: ImagePlus,
+  compact: Library,
+  night: Sparkles,
+  code: Code2,
+};
+
+function ExtensionLogo({ extension }: { extension: FolioExtension }) {
+  const icon = extension.icon || "code";
+  const Icon = EXTENSION_ICON_COMPONENTS[icon];
+  return <span className={`extension-logo logo-${icon}`} aria-hidden="true"><Icon size={18} /></span>;
 }
 
 const SEED_LIBRARY: Book[] = [
@@ -465,6 +594,14 @@ const LOCAL_COVER_URL_CACHE = new Map<string, string>();
 const LOCAL_COVER_PROMISE_CACHE = new Map<string, Promise<string>>();
 const RECOMMENDATION_CACHE = new Map<string, Book[]>();
 const EMPTY_DISCOVERY: DiscoveryProfile = { queries: [], opened: [], dismissed: [] };
+const RADIATION_PARTICLES = Array.from({ length: 72 }, (_, index) => ({
+  x: `${(index * 47 + 9) % 101}%`,
+  size: `${2 + (index * 17) % 5}px`,
+  duration: `${8 + ((index * 13) % 75) / 10}s`,
+  delay: `-${((index * 37) % 140) / 10}s`,
+  drift: `${-62 + (index * 29) % 124}px`,
+  opacity: String(.26 + ((index * 11) % 52) / 100),
+}));
 
 function bookDetailHash(bookId: string) {
   return `#/book/${encodeURIComponent(bookId)}`;
@@ -928,7 +1065,7 @@ export default function HomePage() {
   const [view, setView] = useState<View>("home");
   const [library, setLibrary] = useState<Book[]>(SEED_LIBRARY);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
-  const [extensions, setExtensions] = useState<FolioExtension[]>([]);
+  const [extensions, setExtensions] = useState<FolioExtension[]>(() => mergeBuiltInExtensions([]));
   const [customLists, setCustomLists] = useState<CustomList[]>([]);
   const [selectedListId, setSelectedListId] = useState("");
   const [listCreatorOpen, setListCreatorOpen] = useState(false);
@@ -942,6 +1079,7 @@ export default function HomePage() {
   const [extensionClasses, setExtensionClasses] = useState<string[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [searchInput, setSearchInput] = useState("");
+  const [radiationSnow, setRadiationSnow] = useState(false);
   const [activeQuery, setActiveQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Book[]>([]);
   const [searching, setSearching] = useState(false);
@@ -1025,7 +1163,7 @@ export default function HomePage() {
         if (storedGoogleKey) setGoogleApiKey(storedGoogleKey);
         if (storedExtensions) {
           const parsedExtensions = JSON.parse(storedExtensions);
-          if (Array.isArray(parsedExtensions)) setExtensions(parsedExtensions);
+          setExtensions(mergeBuiltInExtensions(parsedExtensions));
         }
         if (storedLists) {
           const parsedLists = JSON.parse(storedLists);
@@ -1343,6 +1481,32 @@ export default function HomePage() {
       if (view === "lists") setView("home");
     }
     notify(enabled ? "Listas visibles" : "Listas ocultas");
+  }
+
+  function setRecommendationsEnabled(enabled: boolean) {
+    setSettings((current) => current.showRecommendations === enabled ? current : { ...current, showRecommendations: enabled });
+    if (!enabled) {
+      setRecommendationsVisible(false);
+      setRecommendationsLoading(false);
+    }
+    notify(enabled ? "Recomendados visibles en Inicio" : "Recomendados ocultos de Inicio");
+  }
+
+  function toggleExtension(extension: FolioExtension) {
+    const enabled = !extension.enabled;
+    setExtensions((current) => current.map((item) => item.id === extension.id ? { ...item, enabled, updatedAt: Date.now() } : item));
+    notify(`${extension.name} ${enabled ? "activada" : "desactivada"}`);
+  }
+
+  function updateSearchInput(value: string) {
+    if (value.trim().toLocaleUpperCase("es") === "HESOYAM") {
+      const next = !radiationSnow;
+      setRadiationSnow(next);
+      setSearchInput("");
+      notify(next ? "HESOYAM · nevada radiactiva activada" : "HESOYAM · nevada radiactiva detenida");
+      return;
+    }
+    setSearchInput(value);
   }
 
   function notify(message: string) {
@@ -1817,7 +1981,7 @@ export default function HomePage() {
       setLibrary(books.map((book: Book) => ({ ...book, title: cleanCatalogTitle(book.title, book.authors) })));
       if (parsed.settings) setSettings(sanitizeSettings(parsed.settings));
       if (parsed.discovery) setDiscovery({ ...EMPTY_DISCOVERY, ...parsed.discovery });
-      if (Array.isArray(parsed.extensions)) setExtensions(parsed.extensions);
+      if (Array.isArray(parsed.extensions)) setExtensions(mergeBuiltInExtensions(parsed.extensions));
       if (Array.isArray(parsed.lists)) {
         setCustomLists(parsed.lists);
         setSelectedListId(parsed.lists[0]?.id || "");
@@ -1845,7 +2009,7 @@ export default function HomePage() {
       const parsed = JSON.parse(await file.text());
       if (parsed?.type !== "folio-settings" || !parsed.settings || typeof parsed.settings !== "object") throw new Error("Formato no válido");
       setSettings(sanitizeSettings(parsed.settings));
-      if (Array.isArray(parsed.extensions)) setExtensions(parsed.extensions);
+      if (Array.isArray(parsed.extensions)) setExtensions(mergeBuiltInExtensions(parsed.extensions));
       SEARCH_CACHE.clear();
       RECOMMENDATION_CACHE.clear();
       setRecommendationRefresh((value) => value + 1);
@@ -2431,10 +2595,12 @@ export default function HomePage() {
             <button className={settings.hideIncomplete ? "active" : ""} onClick={() => setSettings({ ...settings, hideIncomplete: !settings.hideIncomplete })} aria-pressed={settings.hideIncomplete}>
               <Eye size={17} /><span><strong>Ocultar incompletos</strong><small>Exige portada y sinopsis en toda búsqueda.</small></span><em>{settings.hideIncomplete ? "Sí" : "No"}</em>
             </button>
-            <button className={settings.showRecommendations ? "active" : ""} onClick={() => setSettings({ ...settings, showRecommendations: !settings.showRecommendations })} aria-pressed={settings.showRecommendations}>
-              <Sparkles size={17} /><span><strong>Mostrar Recomendados</strong><small>Oculta o recupera la sección de Inicio.</small></span><em>{settings.showRecommendations ? "Sí" : "No"}</em>
-            </button>
           </div>
+          <div className="setting-row recommendation-visibility-setting">
+            <div><strong>Recomendados en Inicio</strong><span>Desactívalos para eliminar por completo la sección y sus consultas al catálogo.</span><SettingPreview kind="recommendations" label={settings.showRecommendations ? "Visible" : "Oculta"} /></div>
+            <div className="segmented-control"><button type="button" className={!settings.showRecommendations ? "active" : ""} onClick={() => setRecommendationsEnabled(false)} aria-pressed={!settings.showRecommendations}>Ocultar</button><button type="button" className={settings.showRecommendations ? "active" : ""} onClick={() => setRecommendationsEnabled(true)} aria-pressed={settings.showRecommendations}>Mostrar</button></div>
+          </div>
+          {settings.showRecommendations && <>
           <div className="setting-row recommendation-setting">
             <div><strong>Motor de recomendaciones</strong><span>Cambia el cálculo usado exclusivamente en la sección Recomendados de Inicio.</span><SettingPreview kind="recommendations" label={settings.recommendationMode === "basic" ? "Afinidad" : "IA local"} /></div>
             <div className="segmented-control">
@@ -2470,6 +2636,7 @@ export default function HomePage() {
             <p className="recommendation-composer-note"><Sparkles size={14} /> Los libros ya guardados se excluyen incluso si otra API usa una edición o identificador diferente. Si una categoría no tiene suficientes candidatos, Folio completa con títulos nuevos antes de repetir una saga.</p>
           </div>
           <button className="reset-settings subtle-reset" onClick={() => { setDiscovery(EMPTY_DISCOVERY); RECOMMENDATION_CACHE.clear(); setRecommendationRefresh((value) => value + 1); }}><RotateCcw size={16} /> Borrar aprendizaje y descartes</button>
+          </>}
         </section>
 
         <section className="settings-card settings-lists">
@@ -2497,14 +2664,18 @@ export default function HomePage() {
             <div className="extension-list">
               {extensions.map((extension) => (
                 <div className={`extension-item ${extension.enabled ? "enabled" : ""}`} key={extension.id}>
-                  <button className="extension-toggle" onClick={() => setExtensions((current) => current.map((item) => item.id === extension.id ? { ...item, enabled: !item.enabled, updatedAt: Date.now() } : item))} aria-pressed={extension.enabled}>
-                    <span className="toggle-track"><i /></span><span><strong>{extension.name}</strong><small>{extension.enabled ? "Activa" : "Desactivada"} · {extension.css.trim() ? "CSS" : "sin CSS"} · {extension.script.trim() ? "JavaScript" : "sin JavaScript"}</small></span>
+                  <button type="button" className="extension-toggle" onClick={() => toggleExtension(extension)} aria-pressed={extension.enabled} aria-label={`${extension.enabled ? "Desactivar" : "Activar"} ${extension.name}`}>
+                    <ExtensionLogo extension={extension} />
+                    <span className="extension-copy"><strong>{extension.name}</strong><small>{extension.description || `${extension.css.trim() ? "CSS" : "sin CSS"} · ${extension.script.trim() ? "JavaScript" : "sin JavaScript"}`}</small><em className="extension-state">{extension.enabled ? "Activa" : "Desactivada"}</em></span>
+                    <span className="toggle-track"><i /></span>
                   </button>
                   <div className="extension-actions">
-                    <button onClick={() => editExtension(extension)}><Pencil size={14} /> Editar</button>
-                    {pendingExtensionDelete === extension.id ? (
-                      <><button className="danger" onClick={() => deleteExtension(extension.id)}>Confirmar</button><button onClick={() => setPendingExtensionDelete(null)}>Cancelar</button></>
-                    ) : <button className="danger" onClick={() => setPendingExtensionDelete(extension.id)}><Trash2 size={14} /> Eliminar</button>}
+                    {extension.builtIn ? <span className="built-in-label">Integrada</span> : <>
+                      <button onClick={() => editExtension(extension)}><Pencil size={14} /> Editar</button>
+                      {pendingExtensionDelete === extension.id ? (
+                        <><button className="danger" onClick={() => deleteExtension(extension.id)}>Confirmar</button><button onClick={() => setPendingExtensionDelete(null)}>Cancelar</button></>
+                      ) : <button className="danger" onClick={() => setPendingExtensionDelete(extension.id)}><Trash2 size={14} /> Eliminar</button>}
+                    </>}
                   </div>
                 </div>
               ))}
@@ -2538,7 +2709,7 @@ export default function HomePage() {
 
         <section className="settings-card settings-about">
           <div className="settings-card-heading"><span><CircleAlert size={19} /></span><div><h2>Acerca de Folio</h2><p>Un tracker privado y sin cuentas.</p></div></div>
-          <div className="about-lines"><span>Catálogo activo</span><strong>{CATALOG_PROVIDER_INFO[settings.catalogProvider].name}</strong><span>Recomendaciones</span><strong>{settings.showRecommendations ? (settings.recommendationMode === "basic" ? "Personalizadas" : "IA local") : "Ocultas"}</strong><span>Listas</span><strong>{settings.enableLists ? `${customLists.length} creadas` : "Desactivadas"}</strong><span>Extensiones</span><strong>{extensions.filter((extension) => extension.enabled).length} activas</strong><span>Almacenamiento</span><strong>Solo en este dispositivo</strong><span>Versión</span><strong>1.4.2</strong></div>
+          <div className="about-lines"><span>Catálogo activo</span><strong>{CATALOG_PROVIDER_INFO[settings.catalogProvider].name}</strong><span>Recomendaciones</span><strong>{settings.showRecommendations ? (settings.recommendationMode === "basic" ? "Personalizadas" : "IA local") : "Ocultas"}</strong><span>Listas</span><strong>{settings.enableLists ? `${customLists.length} creadas` : "Desactivadas"}</strong><span>Extensiones</span><strong>{extensions.filter((extension) => extension.enabled).length} activas</strong><span>Almacenamiento</span><strong>Solo en este dispositivo</strong><span>Versión</span><strong>1.5.0</strong></div>
         </section>
       </div>
     );
@@ -2729,6 +2900,8 @@ export default function HomePage() {
       data-catalog-language={settings.catalogLanguage}
       data-catalog-quality={settings.catalogQuality}
       data-recommendation-mode={settings.recommendationMode}
+      data-recommendations={settings.showRecommendations ? "on" : "off"}
+      data-radiation={radiationSnow ? "on" : "off"}
       data-lists={settings.enableLists ? "on" : "off"}
       data-list-display={settings.listDisplay}
     >
@@ -2756,6 +2929,24 @@ export default function HomePage() {
       </aside>
 
       <div className="workspace">
+        {radiationSnow && (
+          <div className="radiation-snow" aria-hidden="true">
+            {RADIATION_PARTICLES.map((particle, index) => (
+              <i
+                key={index}
+                className="radiation-particle"
+                style={{
+                  "--radiation-x": particle.x,
+                  "--radiation-size": particle.size,
+                  "--radiation-duration": particle.duration,
+                  "--radiation-delay": particle.delay,
+                  "--radiation-drift": particle.drift,
+                  "--radiation-opacity": particle.opacity,
+                } as CSSProperties}
+              />
+            ))}
+          </div>
+        )}
         <header className="topbar">
           <div className="page-identity">
             <button className="mobile-menu" onClick={() => setMobileNavOpen((open) => !open)} aria-label="Abrir menú"><Menu size={21} /></button>
@@ -2765,7 +2956,7 @@ export default function HomePage() {
             <button type="submit" className="search-submit" aria-label={`Buscar con ${CATALOG_PROVIDER_INFO[settings.catalogProvider].name}`}><Search size={18} /></button>
             <input
               value={searchInput}
-              onChange={(event) => setSearchInput(event.target.value)}
+              onChange={(event) => updateSearchInput(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
                 event.preventDefault();

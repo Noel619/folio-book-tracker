@@ -22,7 +22,7 @@ Folio es un Book Tracker local, privado y minimalista. Permite buscar títulos e
 - filtros de idioma (solo español, solo inglés o ambos con prioridad elegible), exigencia de coincidencia y prioridades para portada y sinopsis;
 - opción para ocultar por completo las recomendaciones de Inicio;
 - previsualizaciones en vivo para cada familia de ajustes visuales y de movimiento;
-- extensiones locales editables con CSS y una API JavaScript aislada para automatizar preferencias;
+- cuatro extensiones visuales integradas y desactivadas inicialmente, además de extensiones locales editables con CSS y una API JavaScript aislada;
 - exportación completa en JSON v2 —incluidas portadas, listas, extensiones y aprendizaje—, copia separada de configuración, lista en CSV e importación de copias JSON v1 y v2.
 
 Los libros, ajustes y portadas se guardan únicamente en el almacenamiento local del navegador de este equipo. Conviene exportar una copia JSON de vez en cuando.
@@ -74,7 +74,7 @@ Activa **Configuración → Listas personales** para mostrar la nueva sección e
 
 ## Extensiones locales
 
-**Configuración → Extensiones de Folio** permite crear, activar, editar y eliminar personalizaciones. El CSS se aplica a la interfaz y el JavaScript se ejecuta en un espacio aislado. La API permitida incluye `folio.notify()`, `folio.setSetting()`, `folio.setVariable()` y `folio.addClass()`. Las extensiones se guardan en este dispositivo y también se incluyen en la copia JSON v2. Usa únicamente código que entiendas.
+**Configuración → Extensiones de Folio** incluye Sala de lectura, Galería de portadas, Biblioteca compacta y Tinta nocturna. Todas empiezan desactivadas y pueden encenderse o apagarse sin alterar definitivamente las preferencias. También permite crear, activar, editar y eliminar personalizaciones propias. El CSS se aplica a la interfaz y el JavaScript se ejecuta en un espacio aislado. La API permitida incluye `folio.notify()`, `folio.setSetting()`, `folio.setVariable()` y `folio.addClass()`. Las extensiones se guardan en este dispositivo y también se incluyen en la copia JSON v2. Usa únicamente código que entiendas.
 
 ## Distribución para itch.io
 
