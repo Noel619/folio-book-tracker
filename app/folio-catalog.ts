@@ -226,6 +226,50 @@ function normalize(value: string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("es").replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+function editDistance(left: string, right: string) {
+  if (left === right) return 0;
+  if (!left.length) return right.length;
+  if (!right.length) return left.length;
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  let previousPrevious: number[] | undefined;
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const substitution = previous[rightIndex - 1] + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1);
+      current[rightIndex] = Math.min(previous[rightIndex] + 1, current[rightIndex - 1] + 1, substitution);
+      if (
+        previousPrevious
+        && leftIndex > 1
+        && rightIndex > 1
+        && left[leftIndex - 1] === right[rightIndex - 2]
+        && left[leftIndex - 2] === right[rightIndex - 1]
+      ) {
+        current[rightIndex] = Math.min(current[rightIndex], previousPrevious[rightIndex - 2] + 1);
+      }
+    }
+    previousPrevious = previous;
+    previous = current;
+  }
+  return previous[right.length];
+}
+
+function fuzzyWordAffinity(queryWord: string, candidateWord: string) {
+  if (candidateWord === queryWord) return 1;
+  if (queryWord.length >= 4 && (candidateWord.startsWith(queryWord) || queryWord.startsWith(candidateWord))) return .88;
+  if (Math.min(queryWord.length, candidateWord.length) < 4) return 0;
+  const maximum = Math.max(queryWord.length, candidateWord.length);
+  const distance = editDistance(queryWord, candidateWord);
+  const allowed = maximum >= 8 ? 2 : 1;
+  return distance <= allowed ? Math.max(.55, 1 - distance / maximum) : 0;
+}
+
+function fuzzyQueryVariant(query: string) {
+  if (/^isbn:/i.test(query)) return "";
+  const tokens = queryTokens(query);
+  if (!tokens.length) return "";
+  return tokens.map((token) => token.length >= 9 ? `${token}~2` : token.length >= 5 ? `${token}~1` : token).join(" ");
+}
+
 function identityKey(book: CatalogBook) {
   const title = normalize(book.title)
     .replace(/\b(illustrated|abridged|unabridged|edition|edicion|ebook|paperback|hardcover)\b.*$/g, "")
@@ -263,16 +307,23 @@ function polishResults(books: CatalogBook[], query: string, options: SearchOptio
   const tokens = queryTokens(query);
   const normalizedQuery = normalize(query.replace(/^isbn:/i, ""));
   const isIsbn = /^isbn:/i.test(query) || /^\d{9,13}[\dx]$/i.test(normalizedQuery.replace(/\s/g, ""));
-  const seen = new Map<string, CatalogBook & { _score: number }>();
+  const seen = new Map<string, CatalogBook & { _score: number; _metadataScore: number }>();
 
   books.forEach((book, sourceIndex) => {
     const title = normalize(book.title);
     const authors = normalize(book.authors.join(" "));
     const subjects = normalize((book.subjects || []).join(" "));
+    const titleWords = title.split(/\s+/).filter(Boolean);
+    const authorWords = authors.split(/\s+/).filter(Boolean);
+    const subjectWords = subjects.split(/\s+/).filter(Boolean);
     const titleHits = tokens.filter((token) => title.includes(token)).length;
     const authorHits = tokens.filter((token) => authors.includes(token)).length;
     const subjectHits = tokens.filter((token) => subjects.includes(token)).length;
-    const relevant = isIsbn || !tokens.length || titleHits > 0 || authorHits > 0 || subjectHits > 0;
+    const fuzzyTitle = tokens.reduce((sum, token) => sum + Math.max(0, ...titleWords.map((word) => fuzzyWordAffinity(token, word))), 0);
+    const fuzzyAuthor = tokens.reduce((sum, token) => sum + Math.max(0, ...authorWords.map((word) => fuzzyWordAffinity(token, word))), 0);
+    const fuzzySubject = tokens.reduce((sum, token) => sum + Math.max(0, ...subjectWords.map((word) => fuzzyWordAffinity(token, word))), 0);
+    const fuzzyCoverage = tokens.length ? Math.max(fuzzyTitle, fuzzyAuthor, fuzzySubject * .55) / tokens.length : 1;
+    const relevant = isIsbn || !tokens.length || titleHits > 0 || authorHits > 0 || subjectHits > 0 || fuzzyCoverage >= .52;
     const cover = hasCover(book);
     const description = hasDescription(book);
     if (options.hideIncomplete && (!cover || !description)) return;
@@ -281,29 +332,31 @@ function polishResults(books: CatalogBook[], query: string, options: SearchOptio
     if ((language === "es" || language === "en") && book.language && book.language !== language) return;
     if ((language === "both-es" || language === "both-en") && book.language && book.language !== "es" && book.language !== "en") return;
 
+    const metadataScore = (options.preferCovers !== false && cover ? 120 : cover ? 10 : 0)
+      + (options.preferDescriptions !== false && description ? 120 : description ? 10 : 0);
     let score = Math.max(0, 16 - sourceIndex * 0.08);
     if (title === normalizedQuery) score += 90;
     else if (normalizedQuery.length > 2 && title.includes(normalizedQuery)) score += 55;
     score += titleHits * 18 + authorHits * 13 + subjectHits * 4;
+    score += fuzzyTitle * 16 + fuzzyAuthor * 12 + fuzzySubject * 3;
     if (tokens.length && titleHits === tokens.length) score += 20;
     if (relevant) score += 8;
-    if (options.preferCovers !== false && cover) score += 18;
-    if (options.preferDescriptions !== false && description) score += 14;
     if (book.pages) score += 2;
     if (book.editionCount && book.editionCount > 1) score += Math.min(5, Math.log2(book.editionCount));
     score += languageAffinity(book, language);
-    const enriched = { ...book, _score: score };
+    const enriched = { ...book, _score: score, _metadataScore: metadataScore };
     const key = identityKey(book);
     const previous = seen.get(key);
-    if (!previous || previous._score < score) seen.set(key, enriched);
+    if (!previous || previous._metadataScore < metadataScore || (previous._metadataScore === metadataScore && previous._score < score)) seen.set(key, enriched);
   });
 
   return [...seen.values()]
-    .sort((a, b) => b._score - a._score)
+    .sort((a, b) => b._metadataScore - a._metadataScore || b._score - a._score)
     .slice(0, options.limit || 24)
     .map((entry) => {
-      const book = { ...entry } as CatalogBook & { _score?: number };
+      const book = { ...entry } as CatalogBook & { _score?: number; _metadataScore?: number };
       delete book._score;
+      delete book._metadataScore;
       return book;
     });
 }
@@ -343,7 +396,14 @@ function withinTimeBudget<T>(promise: Promise<T>, milliseconds: number) {
 }
 
 export async function searchCatalog(provider: CatalogProvider, query: string, options: SearchOptions = {}) {
-  if (provider === "openlibrary") return polishResults(await searchOpenLibrary(query, options), query, options);
+  if (provider === "openlibrary") {
+    const primary = await searchOpenLibrary(query, options);
+    const polished = polishResults(primary, query, options);
+    const fuzzyQuery = fuzzyQueryVariant(query);
+    if (polished.length >= Math.min(8, options.limit || 24) || !fuzzyQuery || normalize(fuzzyQuery) === normalize(query)) return polished;
+    const fuzzy = await searchOpenLibrary(fuzzyQuery, options);
+    return polishResults([...primary, ...fuzzy], query, options);
+  }
   if (provider === "google") return polishResults(await searchGoogleBooks(query, options), query, options);
   if (provider === "gutendex") return polishResults(interleaveAndDedupe([await searchGutendex(query, options)], (options.limit || 24) * 2), query, options);
 
@@ -352,7 +412,18 @@ export async function searchCatalog(provider: CatalogProvider, query: string, op
   const results = await Promise.allSettled(tasks.map((task) => withinTimeBudget(task, 5500)));
   const fulfilled = results.filter((result): result is PromiseFulfilledResult<CatalogBook[]> => result.status === "fulfilled");
   if (!fulfilled.length) throw results.find((result) => result.status === "rejected")?.reason || new Error("Ningún catálogo respondió");
-  return polishResults(interleaveAndDedupe(fulfilled.map((result) => result.value), (options.limit || 24) * 2), query, options);
+  // Keep cross-provider duplicates until polishResults so it can retain the edition
+  // with the best cover and synopsis instead of whichever provider resolved first.
+  const combined = fulfilled.flatMap((result) => result.value);
+  const polished = polishResults(combined, query, options);
+  const fuzzyQuery = fuzzyQueryVariant(query);
+  if (polished.length >= Math.min(8, options.limit || 24) || !fuzzyQuery || normalize(fuzzyQuery) === normalize(query)) return polished;
+  try {
+    const fuzzy = await withinTimeBudget(searchOpenLibrary(fuzzyQuery, options), 4200);
+    return polishResults([...combined, ...fuzzy], query, options);
+  } catch {
+    return polished;
+  }
 }
 
 export async function measureCatalogProvider(provider: CatalogProvider, googleApiKey = "") {

@@ -11,15 +11,17 @@ Folio es un Book Tracker local, privado y minimalista. Permite buscar títulos e
 - búsqueda por título, autor, ISBN o enlace de Open Library con proveedor configurable;
 - portadas personalizadas mediante archivo, enlace o sugerencias de otras ediciones;
 - calidad de portada configurable y preferencia por imágenes grandes en tarjetas visibles;
-- detalle configurable como modal o página completa con historial del navegador;
+- detalle configurable como modal, página enmarcada o página total sin marco, con historial del navegador;
 - nota personal y metadatos del libro opcionales dentro del detalle;
 - temas, fondos, transparencias, tipografías, densidad, acentos, notas, tarjetas, esquinas y movimiento configurables;
 - recomendaciones mediante algoritmo básico o un modelo local que pondera notas, búsquedas, abandonos, extensión y diversidad;
+- composición configurable de cada tanda de recomendaciones: nuevos títulos, continuaciones relacionadas, textos breves, diversidad y límite por autor;
+- listas personales opcionales, desactivadas inicialmente, con color, descripción, orden y vista configurables;
 - filtros de idioma (solo español, solo inglés o ambos con prioridad elegible), exigencia de coincidencia y prioridades para portada y sinopsis;
 - opción para ocultar por completo las recomendaciones de Inicio;
 - previsualizaciones en vivo para cada familia de ajustes visuales y de movimiento;
 - extensiones locales editables con CSS y una API JavaScript aislada para automatizar preferencias;
-- exportación completa en JSON v2 —incluidas las portadas locales y el aprendizaje—, lista en CSV e importación de copias JSON v1 y v2.
+- exportación completa en JSON v2 —incluidas portadas, listas, extensiones y aprendizaje—, copia separada de configuración, lista en CSV e importación de copias JSON v1 y v2.
 
 Los libros, ajustes y portadas se guardan únicamente en el almacenamiento local del navegador de este equipo. Conviene exportar una copia JSON de vez en cuando.
 
@@ -27,7 +29,7 @@ Los libros, ajustes y portadas se guardan únicamente en el almacenamiento local
 
 Abre un libro guardado y haz doble clic sobre su portada, o usa el botón **Cambiar portada**. Puedes seleccionar una imagen local de hasta 10 MB, pegar un enlace HTTP/HTTPS o elegir una de las portadas sugeridas por Open Library. La portada original siempre se puede restaurar.
 
-Desde **Configuración** puedes decidir si los libros se abren en una ventana o en una página completa, además de personalizar el tema, el fondo, la transparencia, los metadatos, la nota personal, las transiciones y el estilo general de Folio.
+Desde **Configuración** puedes decidir si los libros se abren en una ventana, en una página enmarcada o en una **Página total** limpia, además de personalizar el tema, el fondo, la transparencia, los metadatos, la nota personal, las transiciones y el estilo general de Folio.
 
 ## Ejecutar en local
 
@@ -58,11 +60,15 @@ npm test
 
 Configuración permite medir la latencia real de cada proveedor desde el equipo del usuario. La velocidad depende de la conexión, la región, la caché y los límites de cada servicio, por lo que Folio no fija una API universalmente “más rápida”. Los libros guardados siguen disponibles aunque ningún catálogo responda.
 
-Folio ordena las coincidencias por relación real con el título, el autor y los temas, elimina duplicados exactos y favorece portadas y sinopsis cuando están disponibles. En **Configuración → Catálogo y recomendaciones** se puede ampliar o endurecer el filtro, ocultar resultados incompletos y elegir los idiomas admitidos.
+Folio tolera pequeños errores al escribir un título o autor, elimina duplicados entre ediciones y coloca primero las coincidencias con portada y sinopsis. En **Configuración → Catálogo y recomendaciones** se puede ampliar o endurecer el filtro, ocultar resultados incompletos y elegir los idiomas admitidos.
 
 ## Recomendaciones locales
 
-El algoritmo básico cruza autores, temas y búsquedas recientes. La opción **IA local** agrega la nota personal, los libros abandonados, la extensión habitual, textos breves y diversidad entre resultados. No usa un modelo remoto ni envía la biblioteca a un servicio de inteligencia artificial: el cálculo se realiza en el navegador y solo consulta el catálogo elegido para obtener candidatos.
+El algoritmo básico cruza autores, temas y búsquedas recientes. La opción **IA local** agrega la nota personal, los libros abandonados, la extensión habitual, textos breves y diversidad entre resultados. La composición de la tanda permite reservar espacios para descubrimientos, obras relacionadas y textos breves, además de limitar autores y familias repetidas. Los libros ya guardados se comparan también por título y autor, no solo por el identificador de la API. No usa un modelo remoto ni envía la biblioteca a un servicio de inteligencia artificial: el cálculo se realiza en el navegador y solo consulta el catálogo elegido para obtener candidatos.
+
+## Listas personales
+
+Activa **Configuración → Listas personales** para mostrar la nueva sección en el panel lateral. Cada libro guardado puede pertenecer a varias listas sin cambiar su estado de lectura. Las listas forman parte de la copia completa JSON v2; la copia separada de configuración conserva las preferencias, pero nunca reemplaza libros, notas ni listas.
 
 ## Extensiones locales
 
