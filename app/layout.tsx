@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL("http://localhost:3000"),
   title: "Folio · Book Tracker",
-  description: "Una biblioteca personal, privada y sencilla para seguir tus lecturas.",
+  description: "Una biblioteca personal y privada con catálogos configurables y recomendaciones locales.",
   openGraph: {
     title: "Folio · Book Tracker",
     description: "Tu biblioteca. A tu ritmo.",

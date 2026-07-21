@@ -2,6 +2,7 @@
 
 import {
   ArrowDownToLine,
+  BrainCircuit,
   BookCheck,
   BookHeart,
   BookOpen,
@@ -17,6 +18,7 @@ import {
   Eye,
   FileImage,
   FileJson,
+  Gauge,
   Home,
   ImagePlus,
   Library,
@@ -24,10 +26,12 @@ import {
   LoaderCircle,
   Menu,
   Palette,
+  RefreshCw,
   RotateCcw,
   Search,
   Settings,
   Sparkles,
+  Star,
   Upload,
   X,
 } from "lucide-react";
@@ -42,6 +46,15 @@ import {
   putCoverAsset,
   validateImageUrl,
 } from "./folio-storage";
+import {
+  CATALOG_PROVIDER_INFO,
+  type CatalogBook,
+  type CatalogProvider,
+  fetchCatalogJson as fetchJson,
+  measureCatalogProvider,
+  openLibraryCoverUrl as coverUrl,
+  searchCatalog,
+} from "./folio-catalog";
 
 type Status = "reading" | "read" | "wishlist" | "abandoned";
 type View = "home" | "wishlist" | "abandoned" | "timeline" | "settings" | "search";
@@ -56,39 +69,34 @@ type TransitionChoice = "fade" | "slide" | "zoom";
 type CardStyleChoice = "classic" | "flat" | "elevated";
 type CornerChoice = "square" | "soft" | "rounded";
 type CoverEffectChoice = "none" | "lift" | "glow";
+type CoverQualityChoice = "data" | "balanced" | "sharp";
+type BackgroundChoice = "deep" | "soft" | "clear";
+type BackgroundEffectChoice = "none" | "halo" | "paper";
+type PanelChoice = "solid" | "glass" | "clear";
+type MetadataColorChoice = "muted" | "white" | "accent" | "varied";
+type RecommendationMode = "basic" | "local-ai";
+
+type DiscoveryProfile = {
+  queries: string[];
+  opened: Array<Pick<CatalogBook, "id" | "title" | "authors" | "subjects" | "pages" | "source"> & { openedAt: number }>;
+};
+
+type ProviderTestState = { state: "idle" | "testing" | "done" | "error"; milliseconds?: number; message?: string };
 
 type CoverOverride =
   | { kind: "openlibrary"; coverId: number }
   | { kind: "url"; url: string }
   | { kind: "local"; assetId: string; updatedAt: number };
 
-type Book = {
-  id: string;
-  title: string;
-  authors: string[];
-  coverId?: number;
-  publishedYear?: number;
-  pages?: number;
-  description?: string;
-  subjects?: string[];
-  editionCount?: number;
+type Book = CatalogBook & {
   status?: Status;
   rating?: number;
   readYear?: number;
   progress?: number;
   addedAt?: number;
   coverOverride?: CoverOverride;
-};
-
-type OpenLibraryDoc = {
-  key?: string;
-  title?: string;
-  author_name?: string[];
-  cover_i?: number;
-  first_publish_year?: number;
-  number_of_pages_median?: number;
-  subject?: string[];
-  edition_count?: number;
+  recommendationReason?: string;
+  recommendationMatch?: number;
 };
 
 type AppSettings = {
@@ -103,6 +111,14 @@ type AppSettings = {
   cardStyle: CardStyleChoice;
   corners: CornerChoice;
   coverEffect: CoverEffectChoice;
+  coverQuality: CoverQualityChoice;
+  background: BackgroundChoice;
+  backgroundEffect: BackgroundEffectChoice;
+  panels: PanelChoice;
+  metadataColor: MetadataColorChoice;
+  showDetailRating: boolean;
+  catalogProvider: CatalogProvider;
+  recommendationMode: RecommendationMode;
 };
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -117,6 +133,14 @@ const DEFAULT_SETTINGS: AppSettings = {
   cardStyle: "classic",
   corners: "soft",
   coverEffect: "lift",
+  coverQuality: "balanced",
+  background: "deep",
+  backgroundEffect: "none",
+  panels: "solid",
+  metadataColor: "muted",
+  showDetailRating: false,
+  catalogProvider: "openlibrary",
+  recommendationMode: "basic",
 };
 
 const SEED_LIBRARY: Book[] = [
@@ -240,24 +264,8 @@ const DETAIL_CACHE = new Map<string, Partial<Book>>();
 const COVER_SUGGESTION_CACHE = new Map<string, number[]>();
 const LOCAL_COVER_URL_CACHE = new Map<string, string>();
 const LOCAL_COVER_PROMISE_CACHE = new Map<string, Promise<string>>();
-
-async function fetchJson(url: string, timeout = 9000) {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeout);
-  try {
-    const response = await fetch(url, { signal: controller.signal, cache: "force-cache" });
-    if (!response.ok) throw new Error("La fuente de libros no respondió");
-    return await response.json();
-  } finally {
-    window.clearTimeout(timer);
-  }
-}
-
-function coverUrl(coverId?: number, size: "S" | "M" | "L" = "M") {
-  return coverId
-    ? `https://covers.openlibrary.org/b/id/${coverId}-${size}.jpg?default=false`
-    : "";
-}
+const RECOMMENDATION_CACHE = new Map<string, Book[]>();
+const EMPTY_DISCOVERY: DiscoveryProfile = { queries: [], opened: [] };
 
 function bookDetailHash(bookId: string) {
   return `#/book/${encodeURIComponent(bookId)}`;
@@ -297,8 +305,15 @@ function invalidateLocalCoverUrl(assetId: string) {
   LOCAL_COVER_PROMISE_CACHE.delete(assetId);
 }
 
-function useBookCoverSource(book: Book, size: "S" | "M" | "L") {
+function qualityCoverSize(size: "S" | "M" | "L", quality: CoverQualityChoice) {
+  if (quality === "data") return size;
+  if (quality === "sharp") return "L" as const;
+  return size === "S" ? "M" as const : "L" as const;
+}
+
+function useBookCoverSource(book: Book, size: "S" | "M" | "L", quality: CoverQualityChoice) {
   const override = book.coverOverride;
+  const requestedSize = qualityCoverSize(size, quality);
   const localAssetKey = override?.kind === "local" ? `${override.assetId}:${override.updatedAt}` : "";
   const [loadedLocal, setLoadedLocal] = useState<{ key: string; url: string } | null>(null);
 
@@ -315,10 +330,10 @@ function useBookCoverSource(book: Book, size: "S" | "M" | "L") {
     };
   }, [localAssetKey, override]);
 
-  if (override?.kind === "openlibrary") return coverUrl(override.coverId, size);
+  if (override?.kind === "openlibrary") return coverUrl(override.coverId, requestedSize);
   if (override?.kind === "url") return override.url;
   if (override?.kind === "local" && loadedLocal?.key === localAssetKey && loadedLocal.url) return loadedLocal.url;
-  return coverUrl(book.coverId, size);
+  return book.remoteCoverUrl || coverUrl(book.coverId, requestedSize);
 }
 
 function BookCover({
@@ -326,14 +341,16 @@ function BookCover({
   className = "",
   size = "M",
   priority = false,
+  quality = "balanced",
 }: {
   book: Book;
   className?: string;
   size?: "S" | "M" | "L";
   priority?: boolean;
+  quality?: CoverQualityChoice;
 }) {
   const [failedSource, setFailedSource] = useState("");
-  const source = useBookCoverSource(book, size);
+  const source = useBookCoverSource(book, size, quality);
   const initials = book.title
     .split(" ")
     .filter(Boolean)
@@ -365,8 +382,8 @@ function BookCover({
   );
 }
 
-function BookCoverGlow({ book }: { book: Book }) {
-  const source = useBookCoverSource(book, "M");
+function BookCoverGlow({ book, quality }: { book: Book; quality: CoverQualityChoice }) {
+  const source = useBookCoverSource(book, "M", quality);
   if (!source) return null;
   return <div className="modal-cover-glow" style={{ backgroundImage: `url(${source})` }} aria-hidden="true" />;
 }
@@ -379,6 +396,118 @@ function EmptyState({ icon: Icon, title, copy }: { icon: typeof BookOpen; title:
       <p>{copy}</p>
     </div>
   );
+}
+
+const RECOMMENDATION_STOP_WORDS = new Set(["para", "como", "este", "esta", "desde", "sobre", "with", "from", "that", "the", "and", "una", "uno", "del", "las", "los", "por", "con"]);
+
+function normalizedText(value: string) {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("es").replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function meaningfulTokens(value: string) {
+  return normalizedText(value).split(/\s+/).filter((token) => token.length > 2 && !RECOMMENDATION_STOP_WORDS.has(token));
+}
+
+function recommendationSeeds(library: Book[], discovery: DiscoveryProfile, mode: RecommendationMode) {
+  const subjects = new Map<string, number>();
+  const authors = new Map<string, number>();
+  library.forEach((book) => {
+    if (book.status === "abandoned") return;
+    const weight = book.status === "read" ? 1 + (book.rating || 70) / 100 : book.status === "reading" ? 1.2 : 0.7;
+    book.subjects?.slice(0, 5).forEach((subject) => subjects.set(subject, (subjects.get(subject) || 0) + weight));
+    book.authors.slice(0, 2).forEach((author) => authors.set(author, (authors.get(author) || 0) + weight));
+  });
+  const bestSubjects = [...subjects.entries()].sort((a, b) => b[1] - a[1]).map(([value]) => value);
+  const bestAuthors = [...authors.entries()].sort((a, b) => b[1] - a[1]).map(([value]) => value);
+  const seeds = [discovery.queries[0], bestSubjects[0], bestAuthors[0], bestSubjects[1]].filter(Boolean) as string[];
+  if (mode === "local-ai") seeds.push("cuentos ensayos breves");
+  const unique = Array.from(new Set(seeds.map((seed) => seed.trim()).filter(Boolean)));
+  return (unique.length ? unique : ["literatura contemporánea", "cuentos clásicos"]).slice(0, mode === "local-ai" ? 3 : 2);
+}
+
+function rankRecommendations(candidates: Book[], library: Book[], discovery: DiscoveryProfile, mode: RecommendationMode) {
+  const existingTitles = new Set(library.map((book) => normalizedText(book.title)));
+  const existingIds = new Set(library.map((book) => book.id));
+  const termWeights = new Map<string, number>();
+  const negativeTerms = new Map<string, number>();
+  const preferredAuthors = new Set<string>();
+  const readPages = library.filter((book) => book.status === "read" && book.pages).map((book) => book.pages as number).sort((a, b) => a - b);
+  const medianPages = readPages.length ? readPages[Math.floor(readPages.length / 2)] : 300;
+
+  const addTerms = (values: string[], weight: number, target = termWeights) => {
+    values.flatMap(meaningfulTokens).forEach((token) => target.set(token, (target.get(token) || 0) + weight));
+  };
+  library.forEach((book) => {
+    if (book.status === "abandoned") {
+      addTerms([book.title, ...book.authors, ...(book.subjects || [])], 1.8, negativeTerms);
+      return;
+    }
+    const weight = book.status === "read" ? 1.2 + (book.rating || 70) / 65 : book.status === "reading" ? 1.3 : 0.65;
+    addTerms([book.title, ...book.authors, ...(book.subjects || [])], weight);
+    if (book.status === "read" && (book.rating || 0) >= 75) book.authors.forEach((author) => preferredAuthors.add(normalizedText(author)));
+  });
+  discovery.queries.slice(0, 8).forEach((query, index) => addTerms([query], Math.max(0.35, 1.2 - index * 0.1)));
+  discovery.opened.slice(0, 12).forEach((book) => addTerms([book.title, ...book.authors, ...(book.subjects || [])], 0.35));
+
+  const uniqueCandidates = new Map<string, Book>();
+  candidates.forEach((candidate) => {
+    const title = normalizedText(candidate.title);
+    if (!title || existingIds.has(candidate.id) || existingTitles.has(title)) return;
+    const identity = `${title}|${normalizedText(candidate.authors[0] || "")}`;
+    if (!uniqueCandidates.has(identity)) uniqueCandidates.set(identity, candidate);
+  });
+
+  const scored = [...uniqueCandidates.values()].map((book) => {
+    const tokens = new Set(meaningfulTokens([book.title, ...book.authors, ...(book.subjects || [])].join(" ")));
+    const affinity = [...tokens].reduce((sum, token) => sum + Math.min(4, termWeights.get(token) || 0), 0);
+    const rejection = [...tokens].reduce((sum, token) => sum + Math.min(3, negativeTerms.get(token) || 0), 0);
+    const authorAffinity = book.authors.some((author) => preferredAuthors.has(normalizedText(author))) ? 7 : 0;
+    const lengthAffinity = book.pages ? Math.max(0, 8 - Math.abs(book.pages - medianPages) / 45) : 2;
+    const shortBonus = mode === "local-ai" && (book.freeText || (book.pages && book.pages <= 260)) ? 6 : 0;
+    const metadataBonus = (book.remoteCoverUrl || book.coverId ? 2 : 0) + (book.description ? 1 : 0);
+    const rawScore = affinity * (mode === "local-ai" ? 1.35 : 1) + authorAffinity + metadataBonus + (mode === "local-ai" ? lengthAffinity + shortBonus : 0) - rejection * 1.8;
+    const matchingSubject = book.subjects?.find((subject) => meaningfulTokens(subject).some((token) => (termWeights.get(token) || 0) >= 1.5));
+    const sameAuthor = book.authors.find((author) => preferredAuthors.has(normalizedText(author)));
+    const reason = sameAuthor
+      ? `Ya disfrutaste a ${sameAuthor}`
+      : matchingSubject
+        ? `Afinidad con ${matchingSubject}`
+        : book.freeText
+          ? "Texto gratuito para una lectura distinta"
+          : book.pages && book.pages <= 260
+            ? "Una lectura breve dentro de tus intereses"
+            : "Cercano a tus búsquedas y lecturas";
+    return {
+      ...book,
+      recommendationReason: reason,
+      recommendationMatch: Math.max(52, Math.min(96, Math.round(54 + Math.sqrt(Math.max(0, rawScore)) * 4.5))),
+      _score: rawScore,
+      _tokens: tokens,
+    };
+  });
+
+  const withoutRankMetadata = (ranked: typeof scored[number]) => {
+    const book: Book & { _score?: number; _tokens?: Set<string> } = { ...ranked };
+    delete book._score;
+    delete book._tokens;
+    return book;
+  };
+
+  if (mode === "basic") return scored.sort((a, b) => b._score - a._score).slice(0, 12).map(withoutRankMetadata);
+
+  const selected: typeof scored = [];
+  const remaining = [...scored];
+  while (selected.length < 12 && remaining.length) {
+    remaining.sort((a, b) => {
+      const diversityPenalty = (candidate: typeof a) => selected.reduce((penalty, chosen) => {
+        const overlap = [...candidate._tokens].filter((token) => chosen._tokens.has(token)).length;
+        return Math.max(penalty, overlap * 2.2 + (candidate.authors[0] === chosen.authors[0] ? 18 : 0));
+      }, 0);
+      return (b._score - diversityPenalty(b)) - (a._score - diversityPenalty(a));
+    });
+    selected.push(remaining.shift() as typeof scored[number]);
+  }
+  return selected.map(withoutRankMetadata);
 }
 
 export default function HomePage() {
@@ -409,19 +538,37 @@ export default function HomePage() {
   const [coverBusy, setCoverBusy] = useState(false);
   const [coverError, setCoverError] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [googleApiKey, setGoogleApiKey] = useState("");
+  const [discovery, setDiscovery] = useState<DiscoveryProfile>(EMPTY_DISCOVERY);
+  const [recommendations, setRecommendations] = useState<Book[]>([]);
+  const [recommendationsLoading, setRecommendationsLoading] = useState(false);
+  const [recommendationError, setRecommendationError] = useState("");
+  const [recommendationRefresh, setRecommendationRefresh] = useState(0);
+  const [recommendationsVisible, setRecommendationsVisible] = useState(false);
+  const [providerTests, setProviderTests] = useState<Record<CatalogProvider, ProviderTestState>>({
+    openlibrary: { state: "idle" },
+    google: { state: "idle" },
+    gutendex: { state: "idle" },
+    auto: { state: "idle" },
+  });
   const statusEditorRef = useRef<HTMLDivElement>(null);
   const coverFileRef = useRef<HTMLInputElement>(null);
   const detailHeadingRef = useRef<HTMLHeadingElement>(null);
   const detailTriggerRef = useRef<HTMLElement | null>(null);
   const historyInitializedRef = useRef(false);
+  const recommendationSectionRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       try {
         const storedLibrary = window.localStorage.getItem("folio-library-v1");
         const storedSettings = window.localStorage.getItem("folio-settings-v1");
+        const storedDiscovery = window.localStorage.getItem("folio-discovery-v1");
+        const storedGoogleKey = window.localStorage.getItem("folio-google-books-key-v1");
         if (storedLibrary) setLibrary(JSON.parse(storedLibrary));
         if (storedSettings) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(storedSettings) });
+        if (storedDiscovery) setDiscovery({ ...EMPTY_DISCOVERY, ...JSON.parse(storedDiscovery) });
+        if (storedGoogleKey) setGoogleApiKey(storedGoogleKey);
       } catch {
         // A malformed backup should never prevent the app from opening.
       } finally {
@@ -446,6 +593,16 @@ export default function HomePage() {
     }, 180);
     return () => window.clearTimeout(timer);
   }, [settings, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const timer = window.setTimeout(() => {
+      window.localStorage.setItem("folio-discovery-v1", JSON.stringify(discovery));
+      if (googleApiKey.trim()) window.localStorage.setItem("folio-google-books-key-v1", googleApiKey.trim());
+      else window.localStorage.removeItem("folio-google-books-key-v1");
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [discovery, googleApiKey, hydrated]);
 
   useEffect(() => {
     if (!toast) return;
@@ -508,6 +665,66 @@ export default function HomePage() {
   }, [read]);
 
   useEffect(() => {
+    if (!hydrated || view !== "home" || !recommendationSectionRef.current) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) setRecommendationsVisible(true);
+    }, { rootMargin: "420px 0px" });
+    observer.observe(recommendationSectionRef.current);
+    return () => observer.disconnect();
+  }, [hydrated, view]);
+
+  useEffect(() => {
+    if (!hydrated || view !== "home" || !recommendationsVisible) return;
+    const profileKey = library
+      .map((book) => `${book.id}:${book.status || ""}:${book.rating || ""}`)
+      .sort()
+      .join("|");
+    const cacheKey = `${settings.catalogProvider}|${settings.recommendationMode}|${googleApiKey ? "key" : "nokey"}|${profileKey}|${discovery.queries.slice(0, 5).join("|")}|${recommendationRefresh}`;
+    const cached = RECOMMENDATION_CACHE.get(cacheKey);
+    if (cached) {
+      setRecommendations(cached);
+      setRecommendationError("");
+      return;
+    }
+
+    setRecommendations([]);
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      setRecommendationsLoading(true);
+      setRecommendationError("");
+      try {
+        const seeds = recommendationSeeds(library, discovery, settings.recommendationMode);
+        const resultGroups = await Promise.allSettled(seeds.map((seed) => searchCatalog(settings.catalogProvider, seed, {
+          googleApiKey,
+          includeSubjects: settings.recommendationMode === "local-ai",
+          limit: settings.recommendationMode === "local-ai" ? 14 : 10,
+        })));
+        const candidates = resultGroups
+          .filter((result): result is PromiseFulfilledResult<Book[]> => result.status === "fulfilled")
+          .flatMap((result) => result.value);
+        if (!candidates.length) {
+          const rejected = resultGroups.find((result) => result.status === "rejected");
+          throw rejected?.reason || new Error("No encontramos candidatos nuevos");
+        }
+        const ranked = rankRecommendations(candidates, library, discovery, settings.recommendationMode);
+        RECOMMENDATION_CACHE.set(cacheKey, ranked);
+        if (active) setRecommendations(ranked);
+      } catch (error) {
+        if (active) {
+          setRecommendations([]);
+          setRecommendationError(error instanceof Error ? error.message : "No pudimos preparar recomendaciones");
+        }
+      } finally {
+        if (active) setRecommendationsLoading(false);
+      }
+    }, 350);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [discovery, googleApiKey, hydrated, library, recommendationRefresh, recommendationsVisible, settings.catalogProvider, settings.recommendationMode, view]);
+
+  useEffect(() => {
     function syncDetailFromHistory() {
       if (settings.detailMode !== "page") return;
       const bookId = bookIdFromHash(window.location.hash);
@@ -562,6 +779,44 @@ export default function HomePage() {
     setToast(message);
   }
 
+  function rememberSearch(query: string) {
+    const cleaned = query.trim();
+    if (!cleaned || /^https?:\/\//i.test(cleaned)) return;
+    setDiscovery((current) => ({
+      ...current,
+      queries: [cleaned, ...current.queries.filter((item) => normalizedText(item) !== normalizedText(cleaned))].slice(0, 12),
+    }));
+  }
+
+  function rememberOpened(book: Book) {
+    const signal = {
+      id: book.id,
+      title: book.title,
+      authors: book.authors,
+      subjects: book.subjects,
+      pages: book.pages,
+      source: book.source,
+      openedAt: Date.now(),
+    };
+    setDiscovery((current) => ({
+      ...current,
+      opened: [signal, ...current.opened.filter((item) => item.id !== book.id)].slice(0, 24),
+    }));
+  }
+
+  async function testProviderSpeed(provider: CatalogProvider) {
+    setProviderTests((current) => ({ ...current, [provider]: { state: "testing" } }));
+    try {
+      const milliseconds = await measureCatalogProvider(provider, googleApiKey);
+      setProviderTests((current) => ({ ...current, [provider]: { state: "done", milliseconds } }));
+    } catch (error) {
+      setProviderTests((current) => ({
+        ...current,
+        [provider]: { state: "error", message: error instanceof Error ? error.message : "No respondió" },
+      }));
+    }
+  }
+
   function closeBookDetail() {
     setEditMode(null);
     setCoverEditorOpen(false);
@@ -597,6 +852,7 @@ export default function HomePage() {
     const saved = library.find((item) => item.id === book.id);
     const merged = saved ? { ...book, ...saved } : book;
     if (pushHistory) detailTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (pushHistory) rememberOpened(merged);
     setSelectedBook(merged);
     setScoreDraft(merged.rating ?? 80);
     setYearDraft(merged.readYear ?? new Date().getFullYear());
@@ -670,7 +926,7 @@ export default function HomePage() {
           limit: "3",
         });
         const searchData = await fetchJson(`https://openlibrary.org/search.json?${params.toString()}`);
-        const match = Array.isArray(searchData.docs) ? searchData.docs.find((doc: OpenLibraryDoc) => doc.key?.startsWith("/works/")) : undefined;
+        const match = Array.isArray(searchData.docs) ? searchData.docs.find((doc: { key?: string }) => doc.key?.startsWith("/works/")) as { key?: string; cover_i?: number } | undefined : undefined;
         workId = match?.key || "";
         if (match?.cover_i) candidates.push(match.cover_i);
       } catch {
@@ -792,7 +1048,8 @@ export default function HomePage() {
 
     setView("search");
     setActiveQuery(raw);
-    const cacheKey = raw.toLocaleLowerCase("es");
+    rememberSearch(raw);
+    const cacheKey = `${settings.catalogProvider}:${googleApiKey ? "key" : "nokey"}:${raw.toLocaleLowerCase("es")}`;
     const cachedResults = SEARCH_CACHE.get(cacheKey);
     if (cachedResults) {
       setSearchResults(cachedResults);
@@ -817,6 +1074,8 @@ export default function HomePage() {
           description:
             typeof data.description === "string" ? data.description : data.description?.value,
           subjects: Array.isArray(data.subjects) ? data.subjects.slice(0, 8) : [],
+          source: "openlibrary",
+          sourceUrl: `https://openlibrary.org${id}`,
         };
         SEARCH_CACHE.set(cacheKey, [linkedBook]);
         setSearchResults([linkedBook]);
@@ -826,24 +1085,7 @@ export default function HomePage() {
 
       const normalizedIsbn = raw.replace(/[\s-]/g, "");
       const query = /^(97[89])?\d{9}[\dX]$/i.test(normalizedIsbn) ? `isbn:${normalizedIsbn}` : raw;
-      const params = new URLSearchParams({
-        q: query,
-        fields: "key,title,author_name,cover_i,first_publish_year,number_of_pages_median,edition_count",
-        limit: "24",
-        lang: "es",
-      });
-      const data = await fetchJson(`https://openlibrary.org/search.json?${params.toString()}`);
-      const books = (data.docs || [])
-        .filter((doc: OpenLibraryDoc) => doc.key && doc.title)
-        .map((doc: OpenLibraryDoc): Book => ({
-          id: doc.key as string,
-          title: doc.title as string,
-          authors: doc.author_name?.slice(0, 3) || ["Autor no disponible"],
-          coverId: doc.cover_i,
-          publishedYear: doc.first_publish_year,
-          pages: doc.number_of_pages_median,
-          editionCount: doc.edition_count,
-        }));
+      const books = await searchCatalog(settings.catalogProvider, query, { googleApiKey, limit: 24 });
       SEARCH_CACHE.set(cacheKey, books);
       setSearchResults(books);
     } catch (error) {
@@ -904,7 +1146,7 @@ export default function HomePage() {
       const coverAssets = localBookIds.length ? await exportCoverAssets(localBookIds) : [];
       downloadFile(
         `folio-biblioteca-${new Date().toISOString().slice(0, 10)}.json`,
-        JSON.stringify({ version: 2, exportedAt: new Date().toISOString(), settings, books: library, coverAssets }, null, 2),
+        JSON.stringify({ version: 2, exportedAt: new Date().toISOString(), settings, discovery, books: library, coverAssets }, null, 2),
         "application/json",
       );
       notify("Copia completa exportada");
@@ -949,6 +1191,7 @@ export default function HomePage() {
       }
       setLibrary(books);
       if (parsed.settings) setSettings({ ...DEFAULT_SETTINGS, ...parsed.settings });
+      if (parsed.discovery) setDiscovery({ ...EMPTY_DISCOVERY, ...parsed.discovery });
       notify(`${books.length} libros importados`);
     } catch {
       notify("No pudimos leer esa copia de seguridad");
@@ -972,7 +1215,7 @@ export default function HomePage() {
             return (
               <button className="book-card" key={book.id} onClick={() => openBook(book)} aria-label={`Abrir ${book.title}`}>
                 <div className="cover-shell">
-                  <BookCover book={book} size="M" />
+                  <BookCover book={book} size="M" quality={settings.coverQuality} />
                   {savedStatus && (
                     <span className={`status-badge status-${savedStatus}`}>
                       {savedStatus === "read" ? <Check size={12} /> : savedStatus === "reading" ? <BookOpen size={12} /> : savedStatus === "abandoned" ? <X size={12} /> : <BookHeart size={12} />}
@@ -1020,7 +1263,7 @@ export default function HomePage() {
               <div className="reading-row">
                 {visibleReading.map((book, index) => (
                   <button className="reading-card" key={book.id} onClick={() => openBook(book)}>
-                    <BookCover book={book} size="M" priority={index < 3} />
+                    <BookCover book={book} size="M" priority={index < 3} quality={settings.coverQuality} />
                     <div className="reading-card-copy">
                       <span className="reading-label"><BookOpen size={13} /> En curso</span>
                       <h3>{book.title}</h3>
@@ -1049,6 +1292,33 @@ export default function HomePage() {
             <button className="text-button" onClick={() => navigate("timeline")}>Ver cronograma <ChevronRight size={15} /></button>
           </div>
           {renderBookGrid(read, { title: "Tu estante está esperando", copy: "Los libros que marques como leídos aparecerán aquí." }, false, "home-read")}
+        </section>
+
+        <section className="content-section recommendations-section" ref={recommendationSectionRef}>
+          <div className="section-heading">
+            <div><span className="section-index">03</span><h2>Recomendados</h2></div>
+            <div className="recommendation-heading-actions">
+              <span className="recommendation-mode"><BrainCircuit size={14} /> {settings.recommendationMode === "basic" ? "Algoritmo básico" : "IA local"}</span>
+              <button className="text-button" onClick={() => setRecommendationRefresh((value) => value + 1)} disabled={recommendationsLoading}><RefreshCw size={14} /> Renovar</button>
+            </div>
+          </div>
+          {recommendationsLoading && !recommendations.length ? (
+            <div className="search-loading"><LoaderCircle className="spin" size={24} /><span>Aprendiendo de tus lecturas y búsquedas</span></div>
+          ) : recommendationError ? (
+            <div className="recommendation-error"><EmptyState icon={CircleAlert} title="No pudimos recomendar ahora" copy={recommendationError} /><button className="text-button" onClick={() => setRecommendationRefresh((value) => value + 1)}>Intentar otra vez</button></div>
+          ) : recommendations.length ? (
+            <div className="recommendation-grid">
+              {recommendations.map((book) => (
+                <button className="recommendation-card" key={`${book.source || "catalog"}:${book.id}`} onClick={() => openBook(book)}>
+                  <BookCover book={book} size="M" quality={settings.coverQuality} />
+                  <span className="recommendation-match">{book.recommendationMatch}% afinidad</span>
+                  <span className="recommendation-card-copy"><strong>{book.title}</strong><small>{book.authors[0]}</small><em>{book.recommendationReason}</em></span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={Sparkles} title="Folio está conociendo tus gustos" copy="Busca libros o registra algunas lecturas para recibir sugerencias personales." />
+          )}
         </section>
       </>
     );
@@ -1079,7 +1349,7 @@ export default function HomePage() {
                 {yearBooks.map((book, index) => (
                   <button className="timeline-book" key={book.id} onClick={() => openBook(book)}>
                     <span className="timeline-number">{String(index + 1).padStart(2, "0")}</span>
-                    <BookCover book={book} size="S" />
+                    <BookCover book={book} size="S" quality={settings.coverQuality} />
                     <span className="timeline-info"><strong>{book.title}</strong><small>{book.authors[0]} · {book.publishedYear || "s. f."}</small></span>
                     <span className="timeline-score">{book.rating ?? "—"}<small>/100</small></span>
                     <ChevronRight size={17} />
@@ -1152,6 +1422,63 @@ export default function HomePage() {
               ))}
             </div>
           </div>
+          <div className="setting-row">
+            <div><strong>Fondo</strong><span>Aclara el espacio general sin cambiar el tema.</span></div>
+            <div className="segmented-control">
+              {(["deep", "soft", "clear"] as BackgroundChoice[]).map((background) => (
+                <button className={settings.background === background ? "active" : ""} key={background} onClick={() => setSettings({ ...settings, background })}>
+                  {background === "deep" ? "Profundo" : background === "soft" ? "Suave" : "Claro"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="setting-row">
+            <div><strong>Ambiente del fondo</strong><span>Agrega luz o textura; desactivado inicialmente.</span></div>
+            <div className="segmented-control">
+              {(["none", "halo", "paper"] as BackgroundEffectChoice[]).map((backgroundEffect) => (
+                <button className={settings.backgroundEffect === backgroundEffect ? "active" : ""} key={backgroundEffect} onClick={() => setSettings({ ...settings, backgroundEffect })}>
+                  {backgroundEffect === "none" ? "Ninguno" : backgroundEffect === "halo" ? "Halo" : "Papel"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="setting-row">
+            <div><strong>Transparencia de paneles</strong><span>Desde superficies sólidas hasta cristal ligero.</span></div>
+            <div className="segmented-control">
+              {(["solid", "glass", "clear"] as PanelChoice[]).map((panels) => (
+                <button className={settings.panels === panels ? "active" : ""} key={panels} onClick={() => setSettings({ ...settings, panels })}>
+                  {panels === "solid" ? "Sólidos" : panels === "glass" ? "Cristal" : "Livianos"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="setting-row">
+            <div><strong>Datos del libro</strong><span>Color para año, ediciones, páginas y formato.</span></div>
+            <div className="segmented-control wide-control">
+              {(["muted", "white", "accent", "varied"] as MetadataColorChoice[]).map((metadataColor) => (
+                <button className={settings.metadataColor === metadataColor ? "active" : ""} key={metadataColor} onClick={() => setSettings({ ...settings, metadataColor })}>
+                  {metadataColor === "muted" ? "Discretos" : metadataColor === "white" ? "Blancos" : metadataColor === "accent" ? "Acento" : "Variados"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="setting-row">
+            <div><strong>Tu nota en el detalle</strong><span>Muestra tu calificación al abrir un libro leído.</span></div>
+            <div className="segmented-control">
+              <button className={!settings.showDetailRating ? "active" : ""} onClick={() => setSettings({ ...settings, showDetailRating: false })}>Oculta</button>
+              <button className={settings.showDetailRating ? "active" : ""} onClick={() => setSettings({ ...settings, showDetailRating: true })}>Visible</button>
+            </div>
+          </div>
+          <div className="setting-row">
+            <div><strong>Calidad de portadas</strong><span>Equilibrada usa imágenes grandes solo donde aportan nitidez.</span></div>
+            <div className="segmented-control">
+              {(["data", "balanced", "sharp"] as CoverQualityChoice[]).map((coverQuality) => (
+                <button className={settings.coverQuality === coverQuality ? "active" : ""} key={coverQuality} onClick={() => setSettings({ ...settings, coverQuality })}>
+                  {coverQuality === "data" ? "Ahorro" : coverQuality === "balanced" ? "Equilibrada" : "Nítida"}
+                </button>
+              ))}
+            </div>
+          </div>
         </section>
 
         <section className="settings-card settings-behavior">
@@ -1216,33 +1543,67 @@ export default function HomePage() {
           <button className="reset-settings" onClick={() => setSettings(DEFAULT_SETTINGS)}><RotateCcw size={16} /> Restablecer preferencias</button>
         </section>
 
+        <section className="settings-card settings-catalog">
+          <div className="settings-card-heading"><span><Gauge size={19} /></span><div><h2>Catálogo y recomendaciones</h2><p>Elige la fuente que mejor responde desde tu conexión.</p></div></div>
+          <div className="provider-options" aria-label="Fuente del catálogo">
+            {(Object.keys(CATALOG_PROVIDER_INFO) as CatalogProvider[]).map((provider) => {
+              const info = CATALOG_PROVIDER_INFO[provider];
+              const test = providerTests[provider];
+              return (
+                <div className={`provider-option ${settings.catalogProvider === provider ? "active" : ""}`} key={provider}>
+                  <button className="provider-select" onClick={() => setSettings({ ...settings, catalogProvider: provider })} aria-pressed={settings.catalogProvider === provider}>
+                    <span><strong>{info.name}</strong><em>{info.badge}</em></span>
+                    <small>{info.description}</small>
+                  </button>
+                  <button className="provider-speed" onClick={() => void testProviderSpeed(provider)} disabled={test.state === "testing"}>
+                    {test.state === "testing" ? <><LoaderCircle className="spin" size={13} /> Midiendo…</> : test.state === "done" ? <><Check size={13} /> {test.milliseconds} ms</> : test.state === "error" ? <><CircleAlert size={13} /> {test.message}</> : <><Gauge size={13} /> Probar velocidad</>}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <label className="api-key-field">
+            <span><strong>Clave de Google Books</strong><small>Solo se guarda en este dispositivo y no entra en las copias.</small></span>
+            <input type="password" value={googleApiKey} onChange={(event) => setGoogleApiKey(event.target.value)} placeholder="AIza…" autoComplete="off" />
+          </label>
+          <div className="setting-row recommendation-setting">
+            <div><strong>Motor de recomendaciones</strong><span>El básico sigue temas y autores. La IA local pondera nota, abandonos, extensión, variedad y textos breves.</span></div>
+            <div className="segmented-control">
+              <button className={settings.recommendationMode === "basic" ? "active" : ""} onClick={() => setSettings({ ...settings, recommendationMode: "basic" })}>Básico</button>
+              <button className={settings.recommendationMode === "local-ai" ? "active" : ""} onClick={() => setSettings({ ...settings, recommendationMode: "local-ai" })}><BrainCircuit size={14} /> IA local</button>
+            </div>
+          </div>
+          <button className="reset-settings subtle-reset" onClick={() => { setDiscovery(EMPTY_DISCOVERY); RECOMMENDATION_CACHE.clear(); setRecommendationRefresh((value) => value + 1); }}><RotateCcw size={16} /> Borrar aprendizaje de búsquedas</button>
+        </section>
+
         <section className="settings-card settings-data">
           <div className="settings-card-heading"><span><ArrowDownToLine size={19} /></span><div><h2>Tus datos</h2><p>Todo vive en este equipo. Guarda una copia cuando quieras.</p></div></div>
-          <button className="data-action" onClick={exportJson} disabled={exporting}><span><FileJson size={20} /></span><div><strong>{exporting ? "Preparando copia…" : "Exportar copia completa"}</strong><small>Libros, portadas, notas, progreso y preferencias · JSON v2</small></div><Download size={18} /></button>
+          <button className="data-action" onClick={exportJson} disabled={exporting}><span><FileJson size={20} /></span><div><strong>{exporting ? "Preparando copia…" : "Exportar copia completa"}</strong><small>Libros, portadas, notas, progreso, aprendizaje y preferencias · JSON v2</small></div><Download size={18} /></button>
           <button className="data-action" onClick={exportCsv}><span><Library size={20} /></span><div><strong>Exportar lista</strong><small>Compatible con Excel y hojas de cálculo · CSV</small></div><Download size={18} /></button>
           <label className="data-action file-action"><span><Upload size={20} /></span><div><strong>Importar una copia</strong><small>Recupera una exportación anterior · JSON</small></div><ChevronRight size={18} /><input type="file" accept="application/json,.json" onChange={importJson} /></label>
         </section>
 
         <section className="settings-card settings-about">
           <div className="settings-card-heading"><span><CircleAlert size={19} /></span><div><h2>Acerca de Folio</h2><p>Un tracker privado y sin cuentas.</p></div></div>
-          <div className="about-lines"><span>Catálogo de libros</span><strong>Open Library</strong><span>Almacenamiento</span><strong>Solo en este dispositivo</strong><span>Versión</span><strong>1.1</strong></div>
+          <div className="about-lines"><span>Catálogo activo</span><strong>{CATALOG_PROVIDER_INFO[settings.catalogProvider].name}</strong><span>Recomendaciones</span><strong>{settings.recommendationMode === "basic" ? "Algoritmo básico" : "IA local"}</strong><span>Almacenamiento</span><strong>Solo en este dispositivo</strong><span>Versión</span><strong>1.2</strong></div>
         </section>
       </div>
     );
   }
 
   function renderSearch() {
+    const providerName = CATALOG_PROVIDER_INFO[settings.catalogProvider].name;
     return (
       <section className="search-page">
         <div className="search-summary">
           <p>{searching ? "Buscando en el catálogo…" : activeQuery ? `Coincidencias para “${activeQuery}”` : "Escribe un título, autor o ISBN"}</p>
           {!searching && activeQuery && <span>{searchResults.length} resultados</span>}
         </div>
-        {searching && <div className="search-loading"><LoaderCircle className="spin" size={24} /><span>Revisando títulos, autores y ediciones</span></div>}
+        {searching && <div className="search-loading"><LoaderCircle className="spin" size={24} /><span>Buscando con {providerName}</span></div>}
         {searchError && <EmptyState icon={CircleAlert} title="La búsqueda no respondió" copy={`${searchError}. Puedes intentarlo de nuevo en unos segundos.`} />}
         {!searching && !searchError && activeQuery && renderBookGrid(searchResults, { title: "Sin coincidencias", copy: "Prueba con el autor, el ISBN o una parte más corta del título." }, true, "search")}
         {!activeQuery && !searching && (
-          <div className="search-tip"><Search size={22} /><div><strong>Una sola barra, varias formas de buscar</strong><p>Prueba con “Ursula K. Le Guin”, un ISBN o pega un enlace de Open Library.</p></div></div>
+          <div className="search-tip"><Search size={22} /><div><strong>{providerName} está listo</strong><p>Prueba con “Ursula K. Le Guin”, un ISBN o pega un enlace de Open Library.</p></div></div>
         )}
       </section>
     );
@@ -1310,6 +1671,8 @@ export default function HomePage() {
 
   function renderBookDetail(surface: DetailModeChoice) {
     if (!selectedBook) return null;
+    const sourceName = selectedBook.source === "google" ? "Google Books" : selectedBook.source === "gutendex" ? "Project Gutenberg" : "Open Library";
+    const sourceUrl = selectedBook.sourceUrl || (selectedBook.id.startsWith("/") ? `https://openlibrary.org${selectedBook.id}` : "https://openlibrary.org");
     return (
       <article
         className={`book-detail book-detail-${surface} ${surface === "modal" ? "book-modal" : ""}`}
@@ -1321,13 +1684,13 @@ export default function HomePage() {
           {surface === "modal" ? <X size={20} /> : <><ChevronLeft size={17} /> Volver</>}
         </button>
         <div className="modal-visual detail-visual">
-          <BookCoverGlow book={selectedBook} />
+          <BookCoverGlow book={selectedBook} quality={settings.coverQuality} />
           <div
             className={`detail-cover-stage ${coverEditorOpen ? "editing" : ""}`}
             onDoubleClick={(event) => { event.preventDefault(); void openCoverEditor(); }}
             title={selectedSaved ? "Doble clic para cambiar la portada" : undefined}
           >
-            <BookCover book={selectedBook} size="L" priority />
+            <BookCover book={selectedBook} size="L" priority quality={settings.coverQuality} />
             {selectedSaved && !coverEditorOpen && (
               <button className="cover-edit-trigger" onClick={() => void openCoverEditor()}><ImagePlus size={16} /> Cambiar portada</button>
             )}
@@ -1336,9 +1699,12 @@ export default function HomePage() {
         </div>
         <div className="modal-content detail-content">
           <button className="modal-back-mobile" onClick={closeBookDetail}><ChevronLeft size={17} /> Volver</button>
-          <div className="modal-eyebrow"><span>{selectedBook.publishedYear || "Año desconocido"}</span>{selectedBook.pages && <span>{selectedBook.pages} páginas</span>}{selectedBook.editionCount && <span>{selectedBook.editionCount} ediciones</span>}</div>
+          <div className="modal-eyebrow"><span>{selectedBook.publishedYear || "Año desconocido"}</span>{selectedBook.editionCount && <span>{selectedBook.editionCount} ediciones</span>}{selectedBook.pages && <span>{selectedBook.pages} páginas</span>}{selectedBook.freeText && <span>Texto gratuito</span>}</div>
           <h2 id="book-detail-title" ref={detailHeadingRef} tabIndex={-1}>{selectedBook.title}</h2>
           <p className="modal-author">{selectedBook.authors.join(", ")}</p>
+          {settings.showDetailRating && selectedBook.rating !== undefined && (
+            <div className="detail-user-rating" aria-label={`Tu nota ${selectedBook.rating} de 100`}><Star size={17} fill="currentColor" /><span>Tu nota</span><strong>{selectedBook.rating}<small>/100</small></strong></div>
+          )}
           <div className="subject-list">{selectedBook.subjects?.slice(0, 5).map((subject) => <span key={subject}>{subject}</span>)}</div>
           <div className="synopsis">
             <span>Sinopsis</span>
@@ -1370,7 +1736,7 @@ export default function HomePage() {
           )}
 
           {selectedSaved && <button className="remove-action" onClick={removeSelectedBook}><RotateCcw size={15} /> Quitar de mi biblioteca</button>}
-          <a className="source-link" href={`https://openlibrary.org${selectedBook.id}`} target="_blank" rel="noreferrer">Datos de Open Library <ChevronRight size={14} /></a>
+          <a className="source-link" href={sourceUrl} target="_blank" rel="noreferrer">Datos de {sourceName} <ChevronRight size={14} /></a>
         </div>
       </article>
     );
@@ -1390,6 +1756,11 @@ export default function HomePage() {
       data-card-style={settings.cardStyle}
       data-corners={settings.corners}
       data-cover-effect={settings.coverEffect}
+      data-cover-quality={settings.coverQuality}
+      data-background={settings.background}
+      data-background-effect={settings.backgroundEffect}
+      data-panels={settings.panels}
+      data-metadata={settings.metadataColor}
     >
       <aside className={`sidebar ${mobileNavOpen ? "mobile-open" : ""}`}>
         <button className="brand" onClick={() => navigate("home")} aria-label="Folio, ir al inicio"><span className="brand-mark" aria-hidden="true" /><strong>Folio</strong></button>
@@ -1409,7 +1780,7 @@ export default function HomePage() {
             <div><span>{currentTitle.eyebrow}</span><h1>{currentTitle.title}</h1></div>
           </div>
           <form className="search-form" onSubmit={submitSearch} role="search">
-            <Search size={18} />
+            <button type="submit" className="search-submit" aria-label={`Buscar con ${CATALOG_PROVIDER_INFO[settings.catalogProvider].name}`}><Search size={18} /></button>
             <input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="Buscar por título, autor o ISBN" aria-label="Buscar libros" />
             {searchInput && <button type="button" onClick={() => setSearchInput("")} aria-label="Borrar búsqueda"><X size={16} /></button>}
             <kbd>Enter</kbd>

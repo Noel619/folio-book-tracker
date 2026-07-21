@@ -1,6 +1,6 @@
 # Folio
 
-Folio es un Book Tracker local, privado y minimalista. Permite buscar títulos en Open Library y organizar una biblioteca personal sin cuentas ni servidores propios.
+Folio es un Book Tracker local, privado y minimalista. Permite buscar títulos en varios catálogos y organizar una biblioteca personal sin cuentas ni servidores propios.
 
 ## Funciones
 
@@ -8,11 +8,14 @@ Folio es un Book Tracker local, privado y minimalista. Permite buscar títulos e
 - historial de libros leídos, año y nota de 0 a 100;
 - listas de “Por leer” y “Abandonados”;
 - cronograma filtrado por año;
-- búsqueda por título, autor, ISBN o enlace de Open Library;
+- búsqueda por título, autor, ISBN o enlace de Open Library con proveedor configurable;
 - portadas personalizadas mediante archivo, enlace o sugerencias de otras ediciones;
+- calidad de portada configurable y preferencia por imágenes grandes en tarjetas visibles;
 - detalle configurable como modal o página completa con historial del navegador;
-- temas, tipografías, densidad, acentos, notas, tarjetas, esquinas y movimiento configurables;
-- exportación completa en JSON v2 —incluidas las portadas locales—, lista en CSV e importación de copias JSON v1 y v2.
+- nota personal y metadatos del libro opcionales dentro del detalle;
+- temas, fondos, transparencias, tipografías, densidad, acentos, notas, tarjetas, esquinas y movimiento configurables;
+- recomendaciones mediante algoritmo básico o un modelo local que pondera notas, búsquedas, abandonos, extensión y diversidad;
+- exportación completa en JSON v2 —incluidas las portadas locales y el aprendizaje—, lista en CSV e importación de copias JSON v1 y v2.
 
 Los libros, ajustes y portadas se guardan únicamente en el almacenamiento local del navegador de este equipo. Conviene exportar una copia JSON de vez en cuando.
 
@@ -20,7 +23,7 @@ Los libros, ajustes y portadas se guardan únicamente en el almacenamiento local
 
 Abre un libro guardado y haz doble clic sobre su portada, o usa el botón **Cambiar portada**. Puedes seleccionar una imagen local de hasta 10 MB, pegar un enlace HTTP/HTTPS o elegir una de las portadas sugeridas por Open Library. La portada original siempre se puede restaurar.
 
-Desde **Configuración** puedes decidir si los libros se abren en una ventana o en una página completa, además de personalizar el tema, el color de las notas, las transiciones y el estilo general de Folio.
+Desde **Configuración** puedes decidir si los libros se abren en una ventana o en una página completa, además de personalizar el tema, el fondo, la transparencia, los metadatos, la nota personal, las transiciones y el estilo general de Folio.
 
 ## Ejecutar en local
 
@@ -45,9 +48,15 @@ npm run build
 npm test
 ```
 
-## Catálogo
+## Catálogos y velocidad
 
-La búsqueda y las portadas proceden de [Open Library](https://openlibrary.org/developers/api), una API pública que no requiere clave. Folio sigue funcionando con los libros ya guardados aunque el catálogo no esté disponible temporalmente.
+[Open Library](https://openlibrary.org/developers/api) continúa como opción predeterminada y no requiere clave. También se puede elegir [Google Books](https://developers.google.com/books/docs/v1/using), que necesita una clave API guardada solo en el dispositivo, [Gutendex](https://github.com/garethbjohnson/gutendex) para textos gratuitos de Project Gutenberg, o el modo automático que combina las fuentes disponibles.
+
+Configuración permite medir la latencia real de cada proveedor desde el equipo del usuario. La velocidad depende de la conexión, la región, la caché y los límites de cada servicio, por lo que Folio no fija una API universalmente “más rápida”. Los libros guardados siguen disponibles aunque ningún catálogo responda.
+
+## Recomendaciones locales
+
+El algoritmo básico cruza autores, temas y búsquedas recientes. La opción **IA local** agrega la nota personal, los libros abandonados, la extensión habitual, textos breves y diversidad entre resultados. No usa un modelo remoto ni envía la biblioteca a un servicio de inteligencia artificial: el cálculo se realiza en el navegador y solo consulta el catálogo elegido para obtener candidatos.
 
 ## Distribución para itch.io
 

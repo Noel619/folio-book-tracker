@@ -24,18 +24,20 @@ test("server-renders Folio's library home", async () => {
   const html = await response.text();
   assert.match(html, /<title>Folio · Book Tracker<\/title>/i);
   assert.match(html, /Seguir leyendo/);
+  assert.match(html, /Recomendados/);
   assert.match(html, /Cien años de soledad/);
   assert.match(html, /Buscar por título, autor o ISBN/);
   assert.doesNotMatch(html, /Espacio de lectura|Tu próxima página|nota media/i);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
 });
 
-test("keeps local tracking and Open Library capabilities wired", async () => {
-  const [page, layout, css, storage, packageJson] = await Promise.all([
+test("keeps local tracking, catalogs and recommendations wired", async () => {
+  const [page, layout, css, storage, catalog, packageJson] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),
     readFile(new URL("app/layout.tsx", root), "utf8"),
     readFile(new URL("app/globals.css", root), "utf8"),
     readFile(new URL("app/folio-storage.ts", root), "utf8"),
+    readFile(new URL("app/folio-catalog.ts", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
   ]);
 
@@ -58,6 +60,22 @@ test("keeps local tracking and Open Library capabilities wired", async () => {
   assert.match(page, /coverAssets/);
   assert.match(page, /data-rating/);
   assert.match(page, /data-transition/);
+  assert.match(page, /folio-discovery-v1/);
+  assert.match(page, /recommendationMode/);
+  assert.match(page, /rankRecommendations/);
+  assert.match(page, /showDetailRating/);
+  assert.match(page, /catalogProvider/);
+  assert.match(page, /catalogProvider: "openlibrary"/);
+  assert.match(page, /recommendationMode: "basic"/);
+  assert.match(page, /showDetailRating: false/);
+  assert.match(page, /coverQuality: "balanced"/);
+  assert.match(page, /measureCatalogProvider/);
+  assert.match(page, /data-background/);
+  assert.match(page, /data-metadata/);
+  assert.match(catalog, /openlibrary\.org\/search\.json/);
+  assert.match(catalog, /googleapis\.com\/books\/v1\/volumes/);
+  assert.match(catalog, /gutendex\.com\/books/);
+  assert.match(catalog, /Promise\.allSettled/);
   assert.match(storage, /folio-assets-v1/);
   assert.match(storage, /MAX_IMAGE_BYTES = 10 \* 1024 \* 1024/);
   assert.match(storage, /image\/webp/);
@@ -69,7 +87,10 @@ test("keeps local tracking and Open Library capabilities wired", async () => {
   assert.match(css, /\.cover-editor/);
   assert.match(css, /\.book-detail-page/);
   assert.match(css, /data-motion="off"/);
-  assert.match(packageJson, /"version": "1\.1\.0"/);
+  assert.match(css, /\.recommendation-grid/);
+  assert.match(css, /\.provider-options/);
+  assert.match(css, /data-metadata="varied"/);
+  assert.match(packageJson, /"version": "1\.2\.0"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   await access(new URL("public/folio-logo.png", root));
   await assert.rejects(access(new URL("app/_sites-preview", root)));
