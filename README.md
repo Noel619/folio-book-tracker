@@ -15,6 +15,10 @@ Folio es un Book Tracker local, privado y minimalista. Permite buscar títulos e
 - nota personal y metadatos del libro opcionales dentro del detalle;
 - temas, fondos, transparencias, tipografías, densidad, acentos, notas, tarjetas, esquinas y movimiento configurables;
 - recomendaciones mediante algoritmo básico o un modelo local que pondera notas, búsquedas, abandonos, extensión y diversidad;
+- filtros de idioma (solo español, solo inglés o ambos con prioridad elegible), exigencia de coincidencia y prioridades para portada y sinopsis;
+- opción para ocultar por completo las recomendaciones de Inicio;
+- previsualizaciones en vivo para cada familia de ajustes visuales y de movimiento;
+- extensiones locales editables con CSS y una API JavaScript aislada para automatizar preferencias;
 - exportación completa en JSON v2 —incluidas las portadas locales y el aprendizaje—, lista en CSV e importación de copias JSON v1 y v2.
 
 Los libros, ajustes y portadas se guardan únicamente en el almacenamiento local del navegador de este equipo. Conviene exportar una copia JSON de vez en cuando.
@@ -54,9 +58,15 @@ npm test
 
 Configuración permite medir la latencia real de cada proveedor desde el equipo del usuario. La velocidad depende de la conexión, la región, la caché y los límites de cada servicio, por lo que Folio no fija una API universalmente “más rápida”. Los libros guardados siguen disponibles aunque ningún catálogo responda.
 
+Folio ordena las coincidencias por relación real con el título, el autor y los temas, elimina duplicados exactos y favorece portadas y sinopsis cuando están disponibles. En **Configuración → Catálogo y recomendaciones** se puede ampliar o endurecer el filtro, ocultar resultados incompletos y elegir los idiomas admitidos.
+
 ## Recomendaciones locales
 
 El algoritmo básico cruza autores, temas y búsquedas recientes. La opción **IA local** agrega la nota personal, los libros abandonados, la extensión habitual, textos breves y diversidad entre resultados. No usa un modelo remoto ni envía la biblioteca a un servicio de inteligencia artificial: el cálculo se realiza en el navegador y solo consulta el catálogo elegido para obtener candidatos.
+
+## Extensiones locales
+
+**Configuración → Extensiones de Folio** permite crear, activar, editar y eliminar personalizaciones. El CSS se aplica a la interfaz y el JavaScript se ejecuta en un espacio aislado. La API permitida incluye `folio.notify()`, `folio.setSetting()`, `folio.setVariable()` y `folio.addClass()`. Las extensiones se guardan en este dispositivo y también se incluyen en la copia JSON v2. Usa únicamente código que entiendas.
 
 ## Distribución para itch.io
 
