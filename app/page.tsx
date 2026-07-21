@@ -59,9 +59,11 @@ import {
   type CatalogLanguage,
   type CatalogProvider,
   type CatalogQuality,
+  cleanCatalogTitle,
   fetchCatalogJson as fetchJson,
   measureCatalogProvider,
   openLibraryCoverUrl as coverUrl,
+  resolveCanonicalWork,
   searchCatalog,
 } from "./folio-catalog";
 
@@ -111,6 +113,7 @@ type FolioExtension = {
 type DiscoveryProfile = {
   queries: string[];
   opened: Array<Pick<CatalogBook, "id" | "title" | "authors" | "subjects" | "pages" | "source"> & { openedAt: number }>;
+  dismissed: Array<Pick<CatalogBook, "id" | "title" | "authors" | "subjects" | "source" | "canonicalWorkId" | "canonicalTitle"> & { dismissedAt: number }>;
 };
 
 type ProviderTestState = { state: "idle" | "testing" | "done" | "error"; milliseconds?: number; message?: string };
@@ -130,6 +133,7 @@ type Book = CatalogBook & {
   recommendationReason?: string;
   recommendationMatch?: number;
   recommendationKind?: "fresh" | "series" | "text";
+  recommendationSeedKind?: "text";
 };
 
 type AppSettings = {
@@ -447,13 +451,14 @@ const statusLabels: Record<Status, string> = {
 const GRID_PAGE_SIZE = 24;
 const READING_PAGE_SIZE = 12;
 const TIMELINE_PAGE_SIZE = 100;
+const RECOMMENDATION_ENGINE_VERSION = "v3-canonical-topics";
 const SEARCH_CACHE = new Map<string, Book[]>();
 const DETAIL_CACHE = new Map<string, Partial<Book>>();
 const COVER_SUGGESTION_CACHE = new Map<string, number[]>();
 const LOCAL_COVER_URL_CACHE = new Map<string, string>();
 const LOCAL_COVER_PROMISE_CACHE = new Map<string, Promise<string>>();
 const RECOMMENDATION_CACHE = new Map<string, Book[]>();
-const EMPTY_DISCOVERY: DiscoveryProfile = { queries: [], opened: [] };
+const EMPTY_DISCOVERY: DiscoveryProfile = { queries: [], opened: [], dismissed: [] };
 
 function bookDetailHash(bookId: string) {
   return `#/book/${encodeURIComponent(bookId)}`;
@@ -588,8 +593,21 @@ function EmptyState({ icon: Icon, title, copy }: { icon: typeof BookOpen; title:
 
 const RECOMMENDATION_STOP_WORDS = new Set([
   "para", "como", "este", "esta", "desde", "sobre", "with", "from", "that", "the", "and", "una", "uno", "del", "las", "los", "por", "con",
-  "book", "books", "ficcion", "fiction", "libro", "libros", "literatura", "literature", "novel", "novela", "novels",
+  "book", "books", "ficcion", "fiction", "libro", "libros", "literatura", "literature", "novel", "novela", "novels", "general", "edition", "edicion",
+  "reading", "readers", "stories", "story", "text", "texts", "obra", "obras", "volume", "volumen", "collection", "coleccion", "juvenile",
 ]);
+
+const RECOMMENDATION_TOPIC_RULES = [
+  { id: "science-fiction", label: "ciencia ficción", query: "subject:\"science fiction\"", pattern: /science fiction|ciencia ficcion|speculative fiction|dune|fundacion|foundation/i },
+  { id: "post-apocalyptic", label: "ficción posapocalíptica", query: "subject:\"post apocalyptic fiction\"", pattern: /post.?apocal|apocalyp|metro 2033|metro 2034|nuclear survival/i },
+  { id: "dystopia", label: "distopía", query: "subject:\"dystopian fiction\"", pattern: /dystop|distop|totalitarian|1984|animal farm|rebelion en la granja/i },
+  { id: "space-opera", label: "ópera espacial", query: "subject:\"space opera\"", pattern: /space opera|interstellar|galactic|dune|planetary romance/i },
+  { id: "epic-fantasy", label: "fantasía épica", query: "subject:\"epic fantasy\"", pattern: /epic fantasy|high fantasy|fantasia epica|lord of the rings|senor de los anillos|middle earth|tierra media/i },
+  { id: "political-satire", label: "sátira política", query: "subject:\"political satire\"", pattern: /political satire|satira politica|animal farm|rebelion en la granja|orwell/i },
+  { id: "resilience-memoir", label: "memorias de superación", query: "subject:\"motivational memoir\"", pattern: /memoir|memorias|autobiograph|self help|self improvement|superacion|resilien|motivation|david goggins|cant hurt me|never finished/i },
+  { id: "mystery", label: "misterio", query: "subject:\"mystery\"", pattern: /mystery|misterio|detective|crime fiction|thriller/i },
+  { id: "historical-fiction", label: "ficción histórica", query: "subject:\"historical fiction\"", pattern: /historical fiction|ficcion historica|historical novel/i },
+] as const;
 
 function normalizedText(value: string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("es").replace(/[^a-z0-9]+/g, " ").trim();
@@ -599,29 +617,108 @@ function meaningfulTokens(value: string) {
   return normalizedText(value).split(/\s+/).filter((token) => token.length > 2 && !RECOMMENDATION_STOP_WORDS.has(token));
 }
 
-function recommendationSeeds(library: Book[], discovery: DiscoveryProfile, mode: RecommendationMode) {
+function recommendationTopics(book: Pick<Book, "title" | "description" | "subjects">) {
+  const haystack = normalizedText([book.title, book.description || "", ...(book.subjects || [])].join(" "));
+  return RECOMMENDATION_TOPIC_RULES.filter((topic) => topic.pattern.test(haystack));
+}
+
+function usefulRecommendationSubject(value: string) {
+  const normalized = normalizedText(value);
+  if (!normalized || normalized.length > 64 || /\d{4}|--|,/.test(value)) return false;
+  const tokens = meaningfulTokens(value);
+  return tokens.length > 0 && tokens.length <= 6 && !["fiction", "ficcion", "literature", "literatura", "general", "juvenile fiction"].includes(normalized);
+}
+
+function looksLikeSecondaryLiterature(book: Pick<Book, "title" | "authors">) {
+  const title = normalizedText(book.title);
+  const primaryAuthor = normalizedText(book.authors[0] || "");
+  if (primaryAuthor && title === primaryAuthor) return true;
+  const genericTopicTitles = new Set(["dystopian fiction", "historical fiction", "science fiction", "political satire", "epic fantasy", "mystery", "literary criticism"]);
+  if (genericTopicTitles.has(title)) return true;
+  return /\b(?:adaptation|a study of|studies in|study guide|companion to|bibliography of|critical essays|handbook of|encyclopedia of|dictionary of|political thought|literary criticism|complete novels|complete works|complete series|collected works|collected novels|omnibus|box set|trilogy)\b/.test(title)
+    || /\b(?:dystopian|historical|science) fiction\b.*\b(?:thought|study|studies|theory|criticism)\b/.test(title);
+}
+
+function recommendationProfileScore(book: Book) {
+  if (book.status === "abandoned" || book.status === "wishlist") return -1;
+  if (book.status === "read") return 70 + (book.rating || 70);
+  if (book.status === "reading") return 55 + Math.min(40, (book.progress || 0) * .4);
+  return 0;
+}
+
+function recommendationProfileBooks(library: Book[]) {
+  return [...library]
+    .filter((book) => recommendationProfileScore(book) > 0)
+    .sort((left, right) => recommendationProfileScore(right) - recommendationProfileScore(left) || (right.addedAt || 0) - (left.addedAt || 0));
+}
+
+function recommendationSeeds(library: Book[], mode: RecommendationMode) {
+  const profile = recommendationProfileBooks(library);
   const subjects = new Map<string, number>();
-  const authors = new Map<string, number>();
-  library.forEach((book) => {
-    if (book.status === "abandoned") return;
-    const weight = book.status === "read" ? 1 + (book.rating || 70) / 100 : book.status === "reading" ? 1.2 : 0.7;
-    book.subjects?.slice(0, 5).forEach((subject) => subjects.set(subject, (subjects.get(subject) || 0) + weight));
-    book.authors.slice(0, 2).forEach((author) => authors.set(author, (authors.get(author) || 0) + weight));
+  const topics = new Map<string, { query: string; authorWeights: Map<string, number> }>();
+  profile.forEach((book) => {
+    const weight = recommendationProfileScore(book) / 100;
+    const authorKey = normalizedText(book.authors[0] || book.title);
+    book.subjects?.filter(usefulRecommendationSubject).slice(0, 5).forEach((subject) => subjects.set(subject, (subjects.get(subject) || 0) + weight));
+    recommendationTopics(book).forEach((topic) => {
+      const current = topics.get(topic.id) || { query: topic.query, authorWeights: new Map<string, number>() };
+      current.authorWeights.set(authorKey, Math.max(current.authorWeights.get(authorKey) || 0, weight));
+      topics.set(topic.id, current);
+    });
   });
-  const usefulSeed = (value: string) => meaningfulTokens(value).length > 0;
-  const bestSubjects = [...subjects.entries()].sort((a, b) => b[1] - a[1]).map(([value]) => value).filter(usefulSeed);
-  const bestAuthors = [...authors.entries()].sort((a, b) => b[1] - a[1]).map(([value]) => value);
-  const seeds = [discovery.queries[0], bestSubjects[0], bestAuthors[0], bestSubjects[1]].filter(Boolean) as string[];
-  if (mode === "local-ai") seeds.push("cuentos ensayos breves");
+  const topicCandidates = [...topics.entries()].map(([id, topic]) => ({
+    id,
+    query: topic.query,
+    authors: new Set(topic.authorWeights.keys()),
+    weight: [...topic.authorWeights.values()].reduce((sum, weight) => sum + weight, 0),
+  }));
+  const chosenTopics: typeof topicCandidates = [];
+  while (chosenTopics.length < 3) {
+    const next = topicCandidates
+      .filter((topic) => !chosenTopics.some((chosen) => chosen.id === topic.id))
+      .sort((left, right) => {
+        const adjusted = (topic: typeof left) => topic.weight - chosenTopics.reduce((penalty, chosen) => penalty + [...topic.authors].filter((author) => chosen.authors.has(author)).length * 1.35, 0);
+        return adjusted(right) - adjusted(left);
+      })[0];
+    if (!next) break;
+    chosenTopics.push(next);
+  }
+  const topicSeeds = chosenTopics.map((topic) => topic.query);
+  const subjectSeeds = [...subjects.entries()].sort((a, b) => b[1] - a[1]).map(([subject]) => `subject:"${subject.replaceAll("\"", "")}"`).slice(0, 3);
+  const authorFrequency = new Map<string, number>();
+  profile.forEach((book) => book.authors.forEach((author) => authorFrequency.set(normalizedText(author), (authorFrequency.get(normalizedText(author)) || 0) + 1)));
+  const usedAuthors = new Set<string>();
+  const signatureSeeds = [...profile].sort((left, right) => {
+    const leftFrequency = authorFrequency.get(normalizedText(left.authors[0] || "")) || 0;
+    const rightFrequency = authorFrequency.get(normalizedText(right.authors[0] || "")) || 0;
+    return rightFrequency - leftFrequency || recommendationProfileScore(right) - recommendationProfileScore(left);
+  }).flatMap((book) => {
+    const author = book.authors[0] || "";
+    const authorKey = normalizedText(author);
+    if (!authorKey || usedAuthors.has(authorKey)) return [];
+    usedAuthors.add(authorKey);
+    return [`author:"${author.replaceAll("\"", "")}"`];
+  }).slice(0, 2);
+  const interestSeeds = topicSeeds.length ? topicSeeds : subjectSeeds;
+  const seeds = [...interestSeeds.slice(0, 3), ...signatureSeeds, 'subject:"short stories"'];
+  if (mode === "local-ai") seeds.push('subject:"essays"');
   const unique = Array.from(new Set(seeds.map((seed) => seed.trim()).filter(Boolean)));
-  return (unique.length ? unique : ["literatura contemporánea", "cuentos clásicos", "ensayos breves", "premios literarios"]).slice(0, mode === "local-ai" ? 5 : 4);
+  return (unique.length ? unique : ['subject:"dystopian fiction"', 'subject:"science fiction"', 'subject:"epic fantasy"', 'subject:"motivational memoir"', 'subject:"short stories"']).slice(0, mode === "local-ai" ? 7 : 6);
 }
 
 function rankRecommendations(candidates: Book[], library: Book[], discovery: DiscoveryProfile, mode: RecommendationMode, settings: AppSettings) {
   const existingTitles = new Set(library.map((book) => normalizedText(book.title)));
   const existingIds = new Set(library.map((book) => book.id));
+  const existingCanonicalIds = new Set(library.map((book) => book.canonicalWorkId).filter(Boolean) as string[]);
+  const existingCanonicalTitles = new Set(library.map((book) => normalizedText(book.canonicalTitle || "")).filter(Boolean));
+  const dismissedIds = new Set(discovery.dismissed.map((book) => `${book.source || "catalog"}:${book.id}`));
+  const dismissedTitles = new Set(discovery.dismissed.map((book) => normalizedText(book.title)));
+  const dismissedCanonicalIds = new Set(discovery.dismissed.map((book) => book.canonicalWorkId).filter(Boolean) as string[]);
+  const dismissedCanonicalTitles = new Set(discovery.dismissed.map((book) => normalizedText(book.canonicalTitle || "")).filter(Boolean));
   const termWeights = new Map<string, number>();
+  const topicWeights = new Map<string, number>();
   const negativeTerms = new Map<string, number>();
+  const negativeTopics = new Map<string, number>();
   const preferredAuthors = new Set<string>();
   const libraryAuthors = new Set(library.filter((book) => book.status !== "abandoned").flatMap((book) => book.authors.map(normalizedText)));
   const libraryTitleSignals = library
@@ -635,51 +732,79 @@ function rankRecommendations(candidates: Book[], library: Book[], discovery: Dis
   };
   library.forEach((book) => {
     if (book.status === "abandoned") {
-      addTerms([book.title, ...book.authors, ...(book.subjects || [])], 1.8, negativeTerms);
+      addTerms((book.subjects || []).filter(usefulRecommendationSubject), 1.8, negativeTerms);
+      recommendationTopics(book).forEach((topic) => negativeTopics.set(topic.id, (negativeTopics.get(topic.id) || 0) + 2));
       return;
     }
+    if (book.status === "wishlist") return;
     const weight = book.status === "read" ? 1.2 + (book.rating || 70) / 65 : book.status === "reading" ? 1.3 : 0.65;
-    addTerms([book.title, ...book.authors, ...(book.subjects || [])], weight);
+    addTerms((book.subjects || []).filter(usefulRecommendationSubject), weight);
+    recommendationTopics(book).forEach((topic) => topicWeights.set(topic.id, (topicWeights.get(topic.id) || 0) + weight * 2.2));
     if (book.status === "read" && (book.rating || 0) >= 75) book.authors.forEach((author) => preferredAuthors.add(normalizedText(author)));
   });
-  discovery.queries.slice(0, 8).forEach((query, index) => addTerms([query], Math.max(0.35, 1.2 - index * 0.1)));
-  discovery.opened.slice(0, 12).forEach((book) => addTerms([book.title, ...book.authors, ...(book.subjects || [])], 0.35));
+  const validatedQueries = discovery.queries.filter((query) => {
+    const queryKey = normalizedText(query);
+    return queryKey.length >= 4 && discovery.opened.some((book) => {
+      const openedKey = normalizedText(`${book.title} ${book.authors.join(" ")}`);
+      return openedKey.includes(queryKey) || queryKey.includes(normalizedText(book.title));
+    });
+  });
+  validatedQueries.slice(0, 3).forEach((query) => addTerms([query], .2));
+  discovery.opened.slice(0, 10).forEach((book) => {
+    addTerms((book.subjects || []).filter(usefulRecommendationSubject), .22);
+    recommendationTopics(book).forEach((topic) => topicWeights.set(topic.id, (topicWeights.get(topic.id) || 0) + .3));
+  });
+  discovery.dismissed.slice(0, 40).forEach((book) => {
+    addTerms((book.subjects || []).filter(usefulRecommendationSubject), 1.1, negativeTerms);
+    recommendationTopics(book).forEach((topic) => negativeTopics.set(topic.id, (negativeTopics.get(topic.id) || 0) + 1.25));
+  });
 
   const uniqueCandidates = new Map<string, Book>();
   candidates.forEach((candidate) => {
     const title = normalizedText(candidate.title);
     const candidateTokens = new Set(meaningfulTokens(candidate.title));
     const candidateAuthors = new Set(candidate.authors.map(normalizedText));
+    const canonicalId = candidate.canonicalWorkId;
+    const canonicalTitle = normalizedText(candidate.canonicalTitle || "");
     const duplicatesKnownBook = libraryTitleSignals.some((known) => {
       if (known.title === title) return true;
       const sameAuthor = [...candidateAuthors].some((author) => known.authors.has(author));
       if (!sameAuthor || !known.tokens.size || !candidateTokens.size) return false;
       const overlap = [...candidateTokens].filter((token) => known.tokens.has(token)).length;
       const smaller = Math.min(candidateTokens.size, known.tokens.size);
+      const combinedEdition = /[/&]/.test(candidate.title) && overlap === known.tokens.size;
+      if (combinedEdition) return true;
       return smaller >= 2 && overlap / smaller >= .86;
     });
-    if (!title || existingIds.has(candidate.id) || existingTitles.has(title) || duplicatesKnownBook) return;
+    if (!title || looksLikeSecondaryLiterature(candidate) || existingIds.has(candidate.id) || existingTitles.has(title) || dismissedIds.has(`${candidate.source || "catalog"}:${candidate.id}`) || dismissedTitles.has(title) || (canonicalId && (existingCanonicalIds.has(canonicalId) || dismissedCanonicalIds.has(canonicalId))) || (canonicalTitle && (existingCanonicalTitles.has(canonicalTitle) || dismissedCanonicalTitles.has(canonicalTitle))) || duplicatesKnownBook) return;
     const identity = `${title}|${normalizedText(candidate.authors[0] || "")}`;
-    if (!uniqueCandidates.has(identity)) uniqueCandidates.set(identity, candidate);
+    const previous = uniqueCandidates.get(identity);
+    if (!previous || (!previous.recommendationSeedKind && candidate.recommendationSeedKind)) uniqueCandidates.set(identity, candidate);
   });
 
   const scored = [...uniqueCandidates.values()].flatMap((book) => {
     const titleTokens = new Set(meaningfulTokens(book.title));
-    const tokens = new Set(meaningfulTokens([book.title, ...book.authors, ...(book.subjects || [])].join(" ")));
+    const candidateTopics = recommendationTopics(book);
+    const tokens = new Set(meaningfulTokens((book.subjects || []).filter(usefulRecommendationSubject).join(" ")));
     const affinity = [...tokens].reduce((sum, token) => sum + Math.min(4, termWeights.get(token) || 0), 0);
+    const topicAffinity = candidateTopics.reduce((sum, topic) => sum + Math.min(8, topicWeights.get(topic.id) || 0), 0);
     const rejection = [...tokens].reduce((sum, token) => sum + Math.min(3, negativeTerms.get(token) || 0), 0);
-    const sameKnownAuthor = book.authors.some((author) => libraryAuthors.has(normalizedText(author)));
-    const authorAffinity = book.authors.some((author) => preferredAuthors.has(normalizedText(author))) ? 7 : sameKnownAuthor ? 3 : 0;
+    const topicRejection = candidateTopics.reduce((sum, topic) => sum + Math.min(4, negativeTopics.get(topic.id) || 0), 0);
+    const primaryAuthor = normalizedText(book.authors[0] || "");
+    const sameKnownAuthor = libraryAuthors.has(primaryAuthor);
+    const authorAffinity = preferredAuthors.has(primaryAuthor) ? 7 : sameKnownAuthor ? 3 : 0;
     const lengthAffinity = book.pages ? Math.max(0, 8 - Math.abs(book.pages - medianPages) / 45) : 2;
-    const shortText = Boolean(book.freeText || (book.pages && book.pages <= 220));
+    const shortText = Boolean(book.freeText || (book.pages && book.pages <= 220) || (book.recommendationSeedKind === "text" && (!book.pages || book.pages <= 340)));
+    const exploratoryText = Boolean(shortText && book.recommendationSeedKind === "text" && (book.catalogPopularity || 0) >= 15);
     const shortBonus = mode === "local-ai" && shortText ? 6 : 0;
     const hasCover = Boolean(book.remoteCoverUrl || book.coverId);
     const hasDescription = Boolean(book.description && book.description.trim().length >= 24);
     if (!hasCover && !hasDescription) return [];
     if ((settings.hideIncomplete || settings.catalogQuality === "strict") && (!hasCover || !hasDescription)) return [];
-    if (affinity <= 0 && authorAffinity <= 0) return [];
+    if (affinity < 1.1 && topicAffinity <= 0 && authorAffinity <= 0 && !exploratoryText) return [];
     const metadataBonus = (settings.preferCovers && hasCover ? 10 : hasCover ? 2 : 0)
       + (settings.preferDescriptions && hasDescription ? 8 : hasDescription ? 1 : 0);
+    const popularityBonus = book.catalogPopularity ? Math.min(14, Math.log2(book.catalogPopularity + 1) * 1.35) : 0;
     const familyAffinity = libraryTitleSignals.reduce((best, known) => {
       const overlap = [...titleTokens].filter((token) => known.tokens.has(token)).length;
       return Math.max(best, titleTokens.size && known.tokens.size ? overlap / Math.min(titleTokens.size, known.tokens.size) : 0);
@@ -687,15 +812,19 @@ function rankRecommendations(candidates: Book[], library: Book[], discovery: Dis
     const seriesLike = sameKnownAuthor || familyAffinity >= .5;
     const kind: "fresh" | "series" | "text" = shortText && !seriesLike ? "text" : seriesLike ? "series" : "fresh";
     const freshBonus = kind === "fresh" ? 5 : 0;
-    const rawScore = affinity * (mode === "local-ai" ? 1.35 : 1) + authorAffinity + metadataBonus + freshBonus + (mode === "local-ai" ? lengthAffinity + shortBonus : 0) - rejection * 1.8;
-    const matchingSubject = book.subjects?.find((subject) => meaningfulTokens(subject).some((token) => (termWeights.get(token) || 0) >= 1.5));
-    const sameAuthor = book.authors.find((author) => preferredAuthors.has(normalizedText(author)));
+    if (!seriesLike && !shortText && affinity < 1.1 && topicAffinity <= 0) return [];
+    const rawScore = affinity * (mode === "local-ai" ? 1.2 : 1) + topicAffinity * 1.55 + authorAffinity + metadataBonus + popularityBonus + freshBonus + (mode === "local-ai" ? lengthAffinity + shortBonus : 0) - rejection * 1.8 - topicRejection * 2.2;
+    const matchingSubject = book.subjects?.filter(usefulRecommendationSubject).find((subject) => meaningfulTokens(subject).some((token) => (termWeights.get(token) || 0) >= 1.5));
+    const matchingTopic = candidateTopics.sort((left, right) => (topicWeights.get(right.id) || 0) - (topicWeights.get(left.id) || 0))[0];
+    const sameAuthor = preferredAuthors.has(primaryAuthor) ? book.authors[0] : undefined;
     const reason = kind === "series" && sameAuthor
       ? `Otra obra de ${sameAuthor}`
       : kind === "text"
-        ? book.freeText ? "Texto gratuito y breve para variar" : "Una lectura breve dentro de tus intereses"
+        ? book.freeText ? "Texto gratuito y breve para variar" : matchingTopic && (topicWeights.get(matchingTopic.id) || 0) > 0 ? `Lectura breve de ${matchingTopic.label}` : "Una lectura breve reconocida para variar"
+        : matchingTopic && (topicWeights.get(matchingTopic.id) || 0) > 0
+        ? `Afinidad con ${matchingTopic.label}`
         : matchingSubject
-        ? `Afinidad con ${matchingSubject}`
+        ? `Comparte ${matchingSubject.toLocaleLowerCase("es").slice(0, 38)}`
         : "Un título nuevo cercano a tus gustos";
     return [{
       ...book,
@@ -704,7 +833,7 @@ function rankRecommendations(candidates: Book[], library: Book[], discovery: Dis
       recommendationKind: kind,
       _score: rawScore,
       _tokens: tokens,
-      _familyKey: sameKnownAuthor ? `author:${normalizedText(book.authors[0] || "")}` : `title:${[...titleTokens].slice(0, 2).join("-")}`,
+      _familyKey: sameKnownAuthor ? `author:${primaryAuthor}` : matchingTopic ? `topic:${matchingTopic.id}` : `title:${[...titleTokens].slice(0, 2).join("-")}`,
     }];
   });
 
@@ -713,6 +842,7 @@ function rankRecommendations(candidates: Book[], library: Book[], discovery: Dis
     delete book._score;
     delete book._tokens;
     delete book._familyKey;
+    delete book.recommendationSeedKind;
     return book;
   };
 
@@ -735,13 +865,14 @@ function rankRecommendations(candidates: Book[], library: Book[], discovery: Dis
     if (selectedIds.has(`${candidate.source}:${candidate.id}`)) return false;
     const author = normalizedText(candidate.authors[0] || "autor no disponible");
     if ((authorCounts.get(author) || 0) >= authorLimit) return false;
-    if ((familyCounts.get(candidate._familyKey) || 0) >= 2) return false;
+    const familyLimit = candidate.recommendationKind === "series" ? Math.min(2, authorLimit) : settings.recommendationDiversity === "broad" ? 2 : 3;
+    if ((familyCounts.get(candidate._familyKey) || 0) >= familyLimit) return false;
     return true;
   };
-  const take = (kind: "fresh" | "series" | "text" | "any", amount: number) => {
+  const take = (kind: "fresh" | "series" | "text", amount: number) => {
     while (amount > 0 && selected.length < total) {
       const pool = scored
-        .filter((candidate) => (kind === "any" || candidate.recommendationKind === kind) && canSelect(candidate))
+        .filter((candidate) => candidate.recommendationKind === kind && canSelect(candidate))
         .sort((left, right) => adjustedScore(right) - adjustedScore(left));
       const candidate = pool[0];
       if (!candidate) break;
@@ -758,10 +889,33 @@ function rankRecommendations(candidates: Book[], library: Book[], discovery: Dis
   take("series", Math.min(total - selected.length, settings.recommendationSeriesCount));
   take("text", Math.min(total - selected.length, settings.recommendationTextCount));
   take("fresh", total - selected.length);
-  take("text", total - selected.length);
-  take("series", total - selected.length);
-  take("any", total - selected.length);
   return selected.map(withoutRankMetadata);
+}
+
+async function canonicalizeRecommendationData(library: Book[], candidates: Book[]) {
+  const profile = recommendationProfileBooks(library).slice(0, 16);
+  const knownAuthors = new Set(profile.flatMap((book) => book.authors.map(normalizedText)));
+  const libraryMatches = await Promise.all(profile.map(async (book) => ({ book, canonical: await resolveCanonicalWork(book) })));
+  const resolvedByLibraryId = new Map(libraryMatches.map(({ book, canonical }) => [book.id, canonical] as const));
+  const canonicalLibrary = library.map((book) => {
+    const canonical = resolvedByLibraryId.get(book.id);
+    return canonical?.id || canonical?.title
+      ? { ...book, canonicalWorkId: canonical.id || book.canonicalWorkId, canonicalTitle: canonical.title || book.canonicalTitle, canonicalResolved: canonical.resolved || book.canonicalResolved }
+      : book;
+  });
+
+  const needsResolution = candidates
+    .filter((book) => !book.canonicalWorkId && book.authors.some((author) => knownAuthors.has(normalizedText(author))))
+    .slice(0, 18);
+  const candidateMatches = await Promise.all(needsResolution.map(async (book) => ({ book, canonical: await resolveCanonicalWork(book) })));
+  const resolvedByCandidateId = new Map(candidateMatches.map(({ book, canonical }) => [`${book.source || "catalog"}:${book.id}`, canonical] as const));
+  const canonicalCandidates = candidates.map((book) => {
+    const canonical = resolvedByCandidateId.get(`${book.source || "catalog"}:${book.id}`);
+    return canonical?.id || canonical?.title
+      ? { ...book, canonicalWorkId: canonical.id || book.canonicalWorkId, canonicalTitle: canonical.title || book.canonicalTitle, canonicalResolved: canonical.resolved || book.canonicalResolved }
+      : book;
+  });
+  return { library: canonicalLibrary, candidates: canonicalCandidates };
 }
 
 export default function HomePage() {
@@ -833,7 +987,10 @@ export default function HomePage() {
         const storedGoogleKey = window.localStorage.getItem("folio-google-books-key-v1");
         const storedExtensions = window.localStorage.getItem("folio-extensions-v1");
         const storedLists = window.localStorage.getItem("folio-lists-v1");
-        if (storedLibrary) setLibrary(JSON.parse(storedLibrary));
+        if (storedLibrary) {
+          const parsedLibrary = JSON.parse(storedLibrary);
+          if (Array.isArray(parsedLibrary)) setLibrary(parsedLibrary.map((book: Book) => ({ ...book, title: cleanCatalogTitle(book.title, book.authors) })));
+        }
         if (storedSettings) setSettings(sanitizeSettings(JSON.parse(storedSettings)));
         if (storedDiscovery) setDiscovery({ ...EMPTY_DISCOVERY, ...JSON.parse(storedDiscovery) });
         if (storedGoogleKey) setGoogleApiKey(storedGoogleKey);
@@ -1035,7 +1192,11 @@ export default function HomePage() {
       settings.recommendationDiversity,
       settings.recommendationMaxPerAuthor,
     ].join("|");
-    const cacheKey = `${settings.catalogProvider}|${settings.recommendationMode}|${preferenceKey}|${googleApiKey ? "key" : "nokey"}|${profileKey}|${discovery.queries.slice(0, 5).join("|")}|${recommendationRefresh}`;
+    const learningKey = [
+      ...discovery.opened.slice(0, 8).map((book) => `open:${book.source || "catalog"}:${book.id}`),
+      ...(discovery.dismissed || []).slice(0, 20).map((book) => `hide:${book.source || "catalog"}:${book.id}`),
+    ].join("|");
+    const cacheKey = `${RECOMMENDATION_ENGINE_VERSION}|${settings.catalogProvider}|${settings.recommendationMode}|${preferenceKey}|${googleApiKey ? "key" : "nokey"}|${profileKey}|${learningKey}|${recommendationRefresh}`;
     const cached = RECOMMENDATION_CACHE.get(cacheKey);
     if (cached) {
       setRecommendations(cached);
@@ -1049,7 +1210,7 @@ export default function HomePage() {
       setRecommendationsLoading(true);
       setRecommendationError("");
       try {
-        const seeds = recommendationSeeds(library, discovery, settings.recommendationMode);
+        const seeds = recommendationSeeds(library, settings.recommendationMode);
         const resultGroups = await Promise.allSettled(seeds.map((seed) => searchCatalog(settings.catalogProvider, seed, {
           googleApiKey,
           includeSubjects: true,
@@ -1059,15 +1220,24 @@ export default function HomePage() {
           preferCovers: settings.preferCovers,
           preferDescriptions: settings.preferDescriptions,
           hideIncomplete: settings.hideIncomplete,
+          ranking: "relevance",
         })));
-        const candidates = resultGroups
-          .filter((result): result is PromiseFulfilledResult<Book[]> => result.status === "fulfilled")
-          .flatMap((result) => result.value);
+        const candidates = resultGroups.flatMap((result, index) => result.status === "fulfilled"
+          ? result.value.map((book) => ({
+            ...book,
+            recommendationSeedKind: /subject:\"(?:short stories|essays)\"/.test(seeds[index]) ? "text" as const : undefined,
+          }))
+          : []);
         if (!candidates.length) {
           const rejected = resultGroups.find((result) => result.status === "rejected");
           throw rejected?.reason || new Error("No encontramos candidatos nuevos");
         }
-        const ranked = rankRecommendations(candidates, library, discovery, settings.recommendationMode, settings);
+        const canonicalized = await canonicalizeRecommendationData(library, candidates);
+        const enrichedLibrary = canonicalized.library;
+        if (active && enrichedLibrary.some((book, index) => book.canonicalWorkId !== library[index]?.canonicalWorkId || book.canonicalTitle !== library[index]?.canonicalTitle || book.canonicalResolved !== library[index]?.canonicalResolved)) {
+          setLibrary(enrichedLibrary);
+        }
+        const ranked = rankRecommendations(canonicalized.candidates, enrichedLibrary, discovery, settings.recommendationMode, settings);
         RECOMMENDATION_CACHE.set(cacheKey, ranked);
         if (active) setRecommendations(ranked);
       } catch (error) {
@@ -1163,6 +1333,25 @@ export default function HomePage() {
       ...current,
       opened: [signal, ...current.opened.filter((item) => item.id !== book.id)].slice(0, 24),
     }));
+  }
+
+  function dismissRecommendation(book: Book) {
+    const signal = {
+      id: book.id,
+      title: book.title,
+      authors: book.authors,
+      subjects: book.subjects,
+      source: book.source,
+      canonicalWorkId: book.canonicalWorkId,
+      canonicalTitle: book.canonicalTitle,
+      dismissedAt: Date.now(),
+    };
+    setDiscovery((current) => ({
+      ...current,
+      dismissed: [signal, ...(current.dismissed || []).filter((item) => `${item.source || "catalog"}:${item.id}` !== `${book.source || "catalog"}:${book.id}`)].slice(0, 100),
+    }));
+    setRecommendations((current) => current.filter((item) => `${item.source || "catalog"}:${item.id}` !== `${book.source || "catalog"}:${book.id}`));
+    notify("La tendremos menos en cuenta");
   }
 
   async function testProviderSpeed(provider: CatalogProvider) {
@@ -1568,7 +1757,7 @@ export default function HomePage() {
         LOCAL_COVER_URL_CACHE.forEach((url) => URL.revokeObjectURL(url));
         LOCAL_COVER_URL_CACHE.clear();
       }
-      setLibrary(books);
+      setLibrary(books.map((book: Book) => ({ ...book, title: cleanCatalogTitle(book.title, book.authors) })));
       if (parsed.settings) setSettings(sanitizeSettings(parsed.settings));
       if (parsed.discovery) setDiscovery({ ...EMPTY_DISCOVERY, ...parsed.discovery });
       if (Array.isArray(parsed.extensions)) setExtensions(parsed.extensions);
@@ -1808,12 +1997,15 @@ export default function HomePage() {
           ) : recommendations.length ? (
             <div className="recommendation-grid">
               {recommendations.map((book) => (
-                <button className="recommendation-card" key={`${book.source || "catalog"}:${book.id}`} onClick={() => openBook(book)}>
-                  <BookCover book={book} size="M" quality={settings.coverQuality} />
-                  <span className="recommendation-match">{book.recommendationMatch}% afinidad</span>
-                  <span className={`recommendation-kind kind-${book.recommendationKind || "fresh"}`}>{book.recommendationKind === "series" ? "Relacionado" : book.recommendationKind === "text" ? "Texto breve" : "Nuevo título"}</span>
-                  <span className="recommendation-card-copy"><strong>{book.title}</strong><small>{book.authors[0]}</small><em>{book.recommendationReason}</em></span>
-                </button>
+                <article className="recommendation-card" key={`${book.source || "catalog"}:${book.id}`}>
+                  <button className="recommendation-open" onClick={() => openBook(book)} aria-label={`Abrir recomendación ${book.title}`}>
+                    <BookCover book={book} size="M" quality={settings.coverQuality} />
+                    <span className="recommendation-match">{book.recommendationMatch}% afinidad</span>
+                    <span className={`recommendation-kind kind-${book.recommendationKind || "fresh"}`}>{book.recommendationKind === "series" ? "Relacionado" : book.recommendationKind === "text" ? "Texto breve" : "Nuevo título"}</span>
+                    <span className="recommendation-card-copy"><strong>{book.title}</strong><small>{book.authors[0]}</small><em>{book.recommendationReason}</em></span>
+                  </button>
+                  <button className="recommendation-dismiss" onClick={() => dismissRecommendation(book)} aria-label={`No me interesa ${book.title}`} title="No me interesa"><X size={13} /> No me interesa</button>
+                </article>
               ))}
             </div>
           ) : (
@@ -2220,7 +2412,7 @@ export default function HomePage() {
             </div>
             <p className="recommendation-composer-note"><Sparkles size={14} /> Los libros ya guardados se excluyen incluso si otra API usa una edición o identificador diferente. Si una categoría no tiene suficientes candidatos, Folio completa con títulos nuevos antes de repetir una saga.</p>
           </div>
-          <button className="reset-settings subtle-reset" onClick={() => { setDiscovery(EMPTY_DISCOVERY); RECOMMENDATION_CACHE.clear(); setRecommendationRefresh((value) => value + 1); }}><RotateCcw size={16} /> Borrar aprendizaje de búsquedas</button>
+          <button className="reset-settings subtle-reset" onClick={() => { setDiscovery(EMPTY_DISCOVERY); RECOMMENDATION_CACHE.clear(); setRecommendationRefresh((value) => value + 1); }}><RotateCcw size={16} /> Borrar aprendizaje y descartes</button>
         </section>
 
         <section className="settings-card settings-lists">
@@ -2289,7 +2481,7 @@ export default function HomePage() {
 
         <section className="settings-card settings-about">
           <div className="settings-card-heading"><span><CircleAlert size={19} /></span><div><h2>Acerca de Folio</h2><p>Un tracker privado y sin cuentas.</p></div></div>
-          <div className="about-lines"><span>Catálogo activo</span><strong>{CATALOG_PROVIDER_INFO[settings.catalogProvider].name}</strong><span>Recomendaciones</span><strong>{settings.showRecommendations ? (settings.recommendationMode === "basic" ? "Personalizadas" : "IA local") : "Ocultas"}</strong><span>Listas</span><strong>{settings.enableLists ? `${customLists.length} creadas` : "Desactivadas"}</strong><span>Extensiones</span><strong>{extensions.filter((extension) => extension.enabled).length} activas</strong><span>Almacenamiento</span><strong>Solo en este dispositivo</strong><span>Versión</span><strong>1.4</strong></div>
+          <div className="about-lines"><span>Catálogo activo</span><strong>{CATALOG_PROVIDER_INFO[settings.catalogProvider].name}</strong><span>Recomendaciones</span><strong>{settings.showRecommendations ? (settings.recommendationMode === "basic" ? "Personalizadas" : "IA local") : "Ocultas"}</strong><span>Listas</span><strong>{settings.enableLists ? `${customLists.length} creadas` : "Desactivadas"}</strong><span>Extensiones</span><strong>{extensions.filter((extension) => extension.enabled).length} activas</strong><span>Almacenamiento</span><strong>Solo en este dispositivo</strong><span>Versión</span><strong>1.4.1</strong></div>
         </section>
       </div>
     );

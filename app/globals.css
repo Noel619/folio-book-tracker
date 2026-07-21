@@ -738,6 +738,17 @@ label:has(input:focus-visible) {
   transition: transform var(--motion-fast) var(--motion-ease), border-color var(--motion-fast) ease, background var(--motion-fast) ease;
 }
 
+.recommendation-open {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  display: block;
+}
+
 .recommendation-card:hover {
   transform: translateY(-3px);
   border-color: var(--accent-border);
@@ -799,6 +810,29 @@ label:has(input:focus-visible) {
 .recommendation-card-copy em {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.recommendation-dismiss {
+  min-height: 27px;
+  margin: 1px 3px 3px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--subtle);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 7px;
+  font-weight: 700;
+}
+
+.recommendation-dismiss:hover,
+.recommendation-dismiss:focus-visible {
+  border-color: var(--line);
+  background: var(--panel-3);
+  color: var(--text);
 }
 
 .recommendation-card-copy strong {

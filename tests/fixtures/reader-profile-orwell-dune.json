@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "books": [
+    { "id": "google:metro-2034", "title": "Метро 2034", "authors": ["Дмитрий Глуховский"], "subjects": ["Science fiction", "Post-apocalyptic fiction"], "status": "reading", "progress": 100, "addedAt": 12 },
+    { "id": "google:metro-2033-reading", "title": "Metro 2033", "authors": ["Дмитрий Глуховский"], "subjects": ["Science fiction", "Post-apocalyptic fiction"], "status": "reading", "progress": 100, "addedAt": 11 },
+    { "id": "google:never-finished", "title": "Never Finished", "authors": ["David Goggins"], "subjects": ["Memoir", "Self-improvement", "Resilience"], "status": "reading", "progress": 56, "addedAt": 10 },
+    { "id": "google:libro-troll", "title": "El libro Troll", "authors": ["El Rubius"], "subjects": ["Humor"], "status": "reading", "progress": 42, "addedAt": 9 },
+    { "id": "google:animal-farm-es", "title": "Rebelión en la granja [Paperback] [Jan 01, 2000] George Orwell", "authors": ["George Orwell"], "subjects": ["Dystopian fiction", "Political satire"], "status": "read", "rating": 100, "readYear": 2026, "addedAt": 8 },
+    { "id": "google:two-towers", "title": "El Señor De Los Anillos Las DOS Torres", "authors": ["Jude Fisher"], "subjects": ["Epic fantasy", "Middle Earth"], "status": "read", "rating": 100, "readYear": 2026, "addedAt": 7 },
+    { "id": "google:children-dune", "title": "Children of Dune", "authors": ["Frank Herbert"], "subjects": ["Science fiction", "Space opera"], "status": "read", "rating": 100, "readYear": 2026, "addedAt": 6 },
+    { "id": "google:dune-messiah", "title": "El mesías de Dune", "authors": ["Frank Herbert"], "subjects": ["Science fiction", "Space opera"], "status": "read", "rating": 100, "readYear": 2026, "addedAt": 5 },
+    { "id": "google:dune", "title": "Dune", "authors": ["Frank Herbert"], "subjects": ["Science fiction", "Space opera"], "status": "read", "rating": 100, "readYear": 2026, "addedAt": 4 },
+    { "id": "google:metro-2033-read", "title": "Метро 2033", "authors": ["Дмитрий Глуховский"], "subjects": ["Science fiction", "Post-apocalyptic fiction"], "status": "read", "rating": 100, "readYear": 2026, "addedAt": 3 },
+    { "id": "google:1984", "title": "1984", "authors": ["George Orwell"], "subjects": ["Dystopian fiction", "Totalitarianism"], "status": "read", "rating": 87, "readYear": 2026, "addedAt": 2 },
+    { "id": "google:cant-hurt-me", "title": "Can't Hurt Me", "authors": ["David Goggins"], "subjects": ["Memoir", "Self-improvement", "Resilience"], "status": "read", "rating": 85, "readYear": 2026, "addedAt": 1 }
+  ],
+  "discovery": { "queries": [], "opened": [], "dismissed": [] },
+  "extensions": [],
+  "lists": [],
+  "coverAssets": []
+}

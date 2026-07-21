@@ -16,6 +16,8 @@ Folio es un Book Tracker local, privado y minimalista. Permite buscar títulos e
 - temas, fondos, transparencias, tipografías, densidad, acentos, notas, tarjetas, esquinas y movimiento configurables;
 - recomendaciones mediante algoritmo básico o un modelo local que pondera notas, búsquedas, abandonos, extensión y diversidad;
 - composición configurable de cada tanda de recomendaciones: nuevos títulos, continuaciones relacionadas, textos breves, diversidad y límite por autor;
+- equivalencias entre traducciones y ediciones para no recomendar como nuevo un libro ya leído con otro título, por ejemplo *Rebelión en la granja* / *Animal Farm*;
+- acción **No me interesa** en cada recomendación para corregir el perfil local sin abandonar ni guardar el libro;
 - listas personales opcionales, desactivadas inicialmente, con color, descripción, orden y vista configurables;
 - filtros de idioma (solo español, solo inglés o ambos con prioridad elegible), exigencia de coincidencia y prioridades para portada y sinopsis;
 - opción para ocultar por completo las recomendaciones de Inicio;
@@ -64,7 +66,7 @@ Folio tolera pequeños errores al escribir un título o autor, elimina duplicado
 
 ## Recomendaciones locales
 
-El algoritmo básico cruza autores, temas y búsquedas recientes. La opción **IA local** agrega la nota personal, los libros abandonados, la extensión habitual, textos breves y diversidad entre resultados. La composición de la tanda permite reservar espacios para descubrimientos, obras relacionadas y textos breves, además de limitar autores y familias repetidas. Los libros ya guardados se comparan también por título y autor, no solo por el identificador de la API. No usa un modelo remoto ni envía la biblioteca a un servicio de inteligencia artificial: el cálculo se realiza en el navegador y solo consulta el catálogo elegido para obtener candidatos.
+El algoritmo básico cruza autores y temas confirmados por la biblioteca. Una búsqueda aislada ya no cambia el perfil: solo aporta señal cuando después se abre un resultado relacionado. La opción **IA local** agrega la nota personal, los libros abandonados, la extensión habitual, textos breves y diversidad entre resultados. La composición de la tanda permite reservar espacios para descubrimientos, obras relacionadas y textos breves, además de limitar autores y familias repetidas. Folio consulta las ediciones de Open Library para reconocer traducciones, limpia metadatos editoriales incrustados en títulos y descarta guías, bibliografías, adaptaciones y estudios sobre un género. No usa un modelo remoto ni envía la biblioteca a un servicio de inteligencia artificial: el cálculo se realiza en el navegador y solo consulta el catálogo para obtener candidatos e identidades bibliográficas.
 
 ## Listas personales
 

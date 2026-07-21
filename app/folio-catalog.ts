@@ -7,6 +7,9 @@ export type CatalogBook = {
   id: string;
   title: string;
   authors: string[];
+  canonicalWorkId?: string;
+  canonicalTitle?: string;
+  canonicalResolved?: boolean;
   coverId?: number;
   remoteCoverUrl?: string;
   publishedYear?: number;
@@ -18,6 +21,7 @@ export type CatalogBook = {
   sourceUrl?: string;
   freeText?: boolean;
   language?: string;
+  catalogPopularity?: number;
 };
 
 export type SearchOptions = {
@@ -29,6 +33,7 @@ export type SearchOptions = {
   preferCovers?: boolean;
   preferDescriptions?: boolean;
   hideIncomplete?: boolean;
+  ranking?: "metadata" | "relevance";
 };
 
 type OpenLibraryDoc = {
@@ -42,6 +47,10 @@ type OpenLibraryDoc = {
   edition_count?: number;
   first_sentence?: string | string[];
   language?: string[];
+  editions?: { docs?: Array<{ title?: string; language?: string[] }> };
+  ratings_count?: number;
+  want_to_read_count?: number;
+  already_read_count?: number;
 };
 
 type GoogleVolume = {
@@ -127,8 +136,73 @@ function normalizeOpenLibraryId(value: string) {
   return value.endsWith("W") ? `/works/${value}` : value;
 }
 
+export function cleanCatalogTitle(value: string, authors: string[] = []) {
+  let title = value
+    .replace(/\[(?:paperback|hardcover|mass market|kindle|ebook|audiobook|audio cd|\w{3,9}\s+\d{1,2},?\s+\d{4})[^\]]*\]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const normalizedAuthor = normalize(authors[0] || "");
+  const normalizedTitle = normalize(title);
+  if (normalizedAuthor && normalizedTitle.endsWith(normalizedAuthor) && normalizedTitle !== normalizedAuthor) {
+    const trailingAuthor = new RegExp(`${(authors[0] || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "i");
+    title = title.replace(trailingAuthor, "").trim();
+  }
+  return title || value.trim();
+}
+
+const CANONICAL_WORK_CACHE = new Map<string, { id?: string; title?: string; resolved?: boolean }>();
+
+export async function resolveCanonicalWork(book: Pick<CatalogBook, "id" | "title" | "authors" | "canonicalWorkId" | "canonicalTitle" | "canonicalResolved">) {
+  const cleanedTitle = cleanCatalogTitle(book.title, book.authors);
+  const cacheKey = `${normalize(cleanedTitle)}|${normalize(book.authors[0] || "")}`;
+  if (book.canonicalResolved && (book.canonicalWorkId || book.canonicalTitle)) {
+    return { id: book.canonicalWorkId, title: book.canonicalTitle, resolved: true };
+  }
+  const cached = CANONICAL_WORK_CACHE.get(cacheKey);
+  if (cached) return cached;
+  if (!cleanedTitle || !book.authors[0] || normalize(book.authors[0]) === "autor no disponible") {
+    const fallback = { id: book.canonicalWorkId, title: book.canonicalTitle || cleanedTitle, resolved: false };
+    CANONICAL_WORK_CACHE.set(cacheKey, fallback);
+    return fallback;
+  }
+
+  try {
+    const params = new URLSearchParams({
+      q: `"${cleanedTitle}" "${book.authors[0]}"`,
+      fields: "key,title,author_name,edition_count,editions,editions.title",
+      limit: "8",
+      lang: "es",
+    });
+    const data = await fetchCatalogJson<{ docs?: OpenLibraryDoc[] }>(`https://openlibrary.org/search.json?${params.toString()}`, 6500);
+    const titleKey = normalize(cleanedTitle);
+    const authorKey = normalize(book.authors[0]);
+    const authorSurname = authorKey.split(" ").filter(Boolean).at(-1) || authorKey;
+    const ranked = (data.docs || [])
+      .filter((doc) => doc.key && doc.title && (!authorSurname || normalize((doc.author_name || []).join(" ")).includes(authorSurname)))
+      .map((doc, index) => {
+        const editionTitles = doc.editions?.docs?.map((edition) => normalize(edition.title || "")) || [];
+        const workTitle = normalize(doc.title || "");
+        const exactEdition = editionTitles.includes(titleKey);
+        const exactWork = workTitle === titleKey;
+        const overlap = queryTokens(cleanedTitle).filter((token) => workTitle.includes(token) || editionTitles.some((title) => title.includes(token))).length;
+        return { doc, score: (exactEdition ? 90 : 0) + (exactWork ? 8 : 0) + overlap * 5 + Math.min(30, Math.log2((doc.edition_count || 0) + 1) * 4) - index };
+      })
+      .sort((left, right) => right.score - left.score);
+    const match = ranked[0]?.doc;
+    const resolved = match
+      ? { id: normalizeOpenLibraryId(match.key as string), title: match.title, resolved: true }
+      : { id: book.canonicalWorkId, title: book.canonicalTitle || cleanedTitle, resolved: false };
+    CANONICAL_WORK_CACHE.set(cacheKey, resolved);
+    return resolved;
+  } catch {
+    const fallback = { id: book.canonicalWorkId, title: book.canonicalTitle || cleanedTitle, resolved: false };
+    CANONICAL_WORK_CACHE.set(cacheKey, fallback);
+    return fallback;
+  }
+}
+
 async function searchOpenLibrary(query: string, options: SearchOptions) {
-  const fields = ["key", "title", "author_name", "cover_i", "first_publish_year", "number_of_pages_median", "edition_count", "first_sentence", "language"];
+  const fields = ["key", "title", "author_name", "cover_i", "first_publish_year", "number_of_pages_median", "edition_count", "first_sentence", "language", "ratings_count", "want_to_read_count", "already_read_count", "editions", "editions.title", "editions.language"];
   if (options.includeSubjects) fields.push("subject");
   const language = options.language || "both-es";
   const catalogQuery = language === "es" ? `${query} language:spa` : language === "en" ? `${query} language:eng` : query;
@@ -143,10 +217,13 @@ async function searchOpenLibrary(query: string, options: SearchOptions) {
     .filter((doc) => doc.key && doc.title)
     .map((doc): CatalogBook => {
       const id = normalizeOpenLibraryId(doc.key as string);
+      const editionTitle = doc.editions?.docs?.[0]?.title;
       return {
         id,
-        title: doc.title as string,
+        title: cleanCatalogTitle(editionTitle || doc.title as string, doc.author_name || []),
         authors: doc.author_name?.slice(0, 3) || ["Autor no disponible"],
+        canonicalWorkId: id,
+        canonicalTitle: doc.title as string,
         coverId: doc.cover_i,
         publishedYear: doc.first_publish_year,
         pages: doc.number_of_pages_median,
@@ -154,6 +231,7 @@ async function searchOpenLibrary(query: string, options: SearchOptions) {
         subjects: doc.subject?.slice(0, 10),
         description: Array.isArray(doc.first_sentence) ? doc.first_sentence[0] : doc.first_sentence,
         language: doc.language?.includes("spa") ? "es" : doc.language?.includes("eng") ? "en" : doc.language?.length ? "other" : undefined,
+        catalogPopularity: (doc.ratings_count || 0) * 4 + (doc.want_to_read_count || 0) + (doc.already_read_count || 0) * .12,
         source: "openlibrary",
         sourceUrl: id.startsWith("/") ? `https://openlibrary.org${id}` : "https://openlibrary.org",
       };
@@ -183,7 +261,7 @@ async function searchGoogleBooks(query: string, options: SearchOptions) {
       const year = Number(info.publishedDate?.match(/\d{4}/)?.[0]);
       return {
         id: `google:${item.id}`,
-        title: info.title || "Libro sin título",
+        title: cleanCatalogTitle(info.title || "Libro sin título", info.authors || []),
         authors: info.authors?.slice(0, 3) || ["Autor no disponible"],
         remoteCoverUrl: secureImageUrl(cover),
         publishedYear: Number.isFinite(year) ? year : undefined,
@@ -209,7 +287,7 @@ async function searchGutendex(query: string, options: SearchOptions) {
       const authors = item.authors?.map((author) => author.name || "").filter(Boolean).slice(0, 3) || [];
       return {
         id: `gutenberg:${item.id}`,
-        title: item.title || "Texto sin título",
+        title: cleanCatalogTitle(item.title || "Texto sin título", authors),
         authors: authors.length ? authors : ["Autor no disponible"],
         remoteCoverUrl: secureImageUrl(item.formats?.["image/jpeg"]),
         description: item.summaries?.[0],
@@ -278,7 +356,7 @@ function identityKey(book: CatalogBook) {
   return `${title}|${author}`;
 }
 
-const SEARCH_STOP_WORDS = new Set(["a", "al", "an", "and", "de", "del", "el", "en", "la", "las", "los", "of", "the", "un", "una", "y"]);
+const SEARCH_STOP_WORDS = new Set(["a", "al", "an", "and", "author", "de", "del", "el", "en", "la", "las", "los", "of", "subject", "the", "title", "un", "una", "y"]);
 
 function queryTokens(query: string) {
   return normalize(query)
@@ -343,6 +421,7 @@ function polishResults(books: CatalogBook[], query: string, options: SearchOptio
     if (relevant) score += 8;
     if (book.pages) score += 2;
     if (book.editionCount && book.editionCount > 1) score += Math.min(5, Math.log2(book.editionCount));
+    if (options.ranking === "relevance" && book.catalogPopularity) score += Math.min(30, Math.log2(book.catalogPopularity + 1) * 2.8);
     score += languageAffinity(book, language);
     const enriched = { ...book, _score: score, _metadataScore: metadataScore };
     const key = identityKey(book);
@@ -351,7 +430,9 @@ function polishResults(books: CatalogBook[], query: string, options: SearchOptio
   });
 
   return [...seen.values()]
-    .sort((a, b) => b._metadataScore - a._metadataScore || b._score - a._score)
+    .sort((a, b) => options.ranking === "relevance"
+      ? b._score - a._score || b._metadataScore - a._metadataScore
+      : b._metadataScore - a._metadataScore || b._score - a._score)
     .slice(0, options.limit || 24)
     .map((entry) => {
       const book = { ...entry } as CatalogBook & { _score?: number; _metadataScore?: number };

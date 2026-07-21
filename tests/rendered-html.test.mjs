@@ -127,7 +127,7 @@ test("keeps local tracking, catalogs and recommendations wired", async () => {
   assert.match(css, /\.book-detail-full/);
   assert.match(css, /\.lists-page/);
   assert.match(css, /\.preview-scenes/);
-  assert.match(packageJson, /"version": "1\.4\.0"/);
+  assert.match(packageJson, /"version": "1\.4\.1"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   await access(new URL("public/folio-logo.png", root));
   await assert.rejects(access(new URL("app/_sites-preview", root)));
@@ -140,4 +140,26 @@ test("keeps a four-thousand-book library progressively bounded", () => {
   assert.equal(firstGridPage.length, 24);
   assert.equal(firstTimelinePage.length, 100);
   assert.equal(books.length, 4_000);
+});
+
+test("cleans noisy edition titles and keeps translation matching wired", async () => {
+  const { cleanCatalogTitle } = await import(new URL("../app/folio-catalog.ts", import.meta.url));
+  const noisy = "Rebelión en la granja [Paperback] [Jan 01, 2000] George Orwell";
+  assert.equal(cleanCatalogTitle(noisy, ["George Orwell"]), "Rebelión en la granja");
+
+  const [page, catalog, fixtureText] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/folio-catalog.ts", root), "utf8"),
+    readFile(new URL("tests/fixtures/reader-profile-orwell-dune.json", root), "utf8"),
+  ]);
+  const fixture = JSON.parse(fixtureText);
+  assert.equal(fixture.books.length, 12);
+  assert.match(catalog, /resolveCanonicalWork/);
+  assert.match(catalog, /editions\.title/);
+  assert.match(catalog, /ranking === "relevance"/);
+  assert.match(page, /RECOMMENDATION_ENGINE_VERSION = "v3-canonical-topics"/);
+  assert.match(page, /subject:\\"dystopian fiction\\"/);
+  assert.match(page, /looksLikeSecondaryLiterature/);
+  assert.match(page, /dismissRecommendation/);
+  assert.match(page, /No me interesa/);
 });
