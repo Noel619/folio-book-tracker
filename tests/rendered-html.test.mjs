@@ -95,6 +95,11 @@ test("keeps local tracking, catalogs and recommendations wired", async () => {
   assert.match(page, /showDetailRating: false/);
   assert.match(page, /coverQuality: "balanced"/);
   assert.match(page, /measureCatalogProvider/);
+  assert.match(page, /folioOrigin/);
+  assert.match(page, /restoreBookDetailOrigin/);
+  assert.match(page, /requestSubmit\(\)/);
+  assert.match(page, /setListsEnabled/);
+  assert.match(page, /Listas ocultas/);
   assert.match(page, /data-background/);
   assert.match(page, /data-metadata/);
   assert.match(catalog, /openlibrary\.org\/search\.json/);
@@ -127,7 +132,7 @@ test("keeps local tracking, catalogs and recommendations wired", async () => {
   assert.match(css, /\.book-detail-full/);
   assert.match(css, /\.lists-page/);
   assert.match(css, /\.preview-scenes/);
-  assert.match(packageJson, /"version": "1\.4\.1"/);
+  assert.match(packageJson, /"version": "1\.4\.2"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   await access(new URL("public/folio-logo.png", root));
   await assert.rejects(access(new URL("app/_sites-preview", root)));

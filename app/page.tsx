@@ -42,7 +42,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { type CSSProperties, ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type CoverAssetExport,
   deleteCoverAsset,
@@ -69,6 +69,12 @@ import {
 
 type Status = "reading" | "read" | "wishlist" | "abandoned";
 type View = "home" | "wishlist" | "abandoned" | "timeline" | "lists" | "settings" | "search";
+type DetailOrigin = {
+  view: View;
+  activeQuery: string;
+  searchInput: string;
+  scrollY: number;
+};
 type FontChoice = "sans" | "serif" | "rounded";
 type DensityChoice = "compact" | "comfortable" | "large";
 type AccentChoice = "violet" | "sage" | "amber" | "blue" | "rose";
@@ -975,8 +981,31 @@ export default function HomePage() {
   const coverFileRef = useRef<HTMLInputElement>(null);
   const detailHeadingRef = useRef<HTMLHeadingElement>(null);
   const detailTriggerRef = useRef<HTMLElement | null>(null);
+  const detailOriginRef = useRef<DetailOrigin | null>(null);
+  const detailRequestRef = useRef(0);
   const historyInitializedRef = useRef(false);
   const recommendationSectionRef = useRef<HTMLElement>(null);
+
+  const restoreBookDetailOrigin = useCallback(() => {
+    const origin = detailOriginRef.current;
+    const nextView = origin?.view || (activeQuery ? "search" : "home");
+    if (origin?.view === "search") {
+      setActiveQuery(origin.activeQuery);
+      setSearchInput(origin.searchInput);
+    }
+    setView(nextView);
+    detailRequestRef.current += 1;
+    setSelectedBook(null);
+    setDetailLoading(false);
+    setEditMode(null);
+    setCoverEditorOpen(false);
+    setCoverError("");
+    detailOriginRef.current = null;
+    window.requestAnimationFrame(() => {
+      detailTriggerRef.current?.focus();
+      if (origin) window.scrollTo({ top: origin.scrollY, behavior: "auto" });
+    });
+  }, [activeQuery]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1112,7 +1141,6 @@ export default function HomePage() {
         setCoverEditorOpen(false);
         setCoverError("");
       } else {
-        setEditMode(null);
         if (settings.detailMode !== "modal" && bookIdFromHash(window.location.hash)) {
           if (window.history.state?.folioDetail) {
             window.history.back();
@@ -1120,13 +1148,12 @@ export default function HomePage() {
           }
           window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
         }
-        setSelectedBook(null);
-        window.requestAnimationFrame(() => detailTriggerRef.current?.focus());
+        restoreBookDetailOrigin();
       }
     }
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [coverEditorOpen, selectedBook, settings.detailMode]);
+  }, [coverEditorOpen, restoreBookDetailOrigin, selectedBook, settings.detailMode]);
 
   useEffect(() => () => {
     LOCAL_COVER_URL_CACHE.forEach((url) => URL.revokeObjectURL(url));
@@ -1260,13 +1287,12 @@ export default function HomePage() {
       if (settings.detailMode === "modal") return;
       const bookId = bookIdFromHash(window.location.hash);
       if (!bookId) {
-        setSelectedBook(null);
-        setEditMode(null);
-        setCoverEditorOpen(false);
-        window.requestAnimationFrame(() => detailTriggerRef.current?.focus());
+        restoreBookDetailOrigin();
         return;
       }
       const stateBook = window.history.state?.folioBook as Book | undefined;
+      const stateOrigin = window.history.state?.folioOrigin as DetailOrigin | undefined;
+      if (stateOrigin) detailOriginRef.current = stateOrigin;
       const candidate = library.find((book) => book.id === bookId)
         || searchResults.find((book) => book.id === bookId)
         || (stateBook?.id === bookId ? stateBook : undefined);
@@ -1274,8 +1300,7 @@ export default function HomePage() {
         void openBook(candidate, false);
       } else {
         window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-        setSelectedBook(null);
-        setView("home");
+        restoreBookDetailOrigin();
         notify("Ese libro ya no está disponible en esta sesión");
       }
     }
@@ -1288,10 +1313,13 @@ export default function HomePage() {
     return () => window.removeEventListener("popstate", syncDetailFromHistory);
     // openBook intentionally stays outside the dependency list so book metadata updates do not reopen the detail.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, library, searchResults, settings.detailMode]);
+  }, [hydrated, library, restoreBookDetailOrigin, searchResults, settings.detailMode]);
 
   function navigate(nextView: View) {
+    detailRequestRef.current += 1;
+    detailOriginRef.current = null;
     setSelectedBook(null);
+    setDetailLoading(false);
     setEditMode(null);
     setCoverEditorOpen(false);
     if (bookIdFromHash(window.location.hash)) {
@@ -1304,6 +1332,17 @@ export default function HomePage() {
       setSearchResults([]);
       setSearchError("");
     }
+  }
+
+  function setListsEnabled(enabled: boolean) {
+    setSettings((current) => current.enableLists === enabled ? current : { ...current, enableLists: enabled });
+    if (!enabled) {
+      setListCreatorOpen(false);
+      setPendingListDelete("");
+      setSelectedListId("");
+      if (view === "lists") setView("home");
+    }
+    notify(enabled ? "Listas visibles" : "Listas ocultas");
   }
 
   function notify(message: string) {
@@ -1378,8 +1417,7 @@ export default function HomePage() {
       }
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     }
-    setSelectedBook(null);
-    window.requestAnimationFrame(() => detailTriggerRef.current?.focus());
+    restoreBookDetailOrigin();
   }
 
   function beginEdit(mode: "read" | "reading") {
@@ -1399,9 +1437,14 @@ export default function HomePage() {
   }
 
   async function openBook(book: Book, pushHistory = true) {
+    const detailRequestId = ++detailRequestRef.current;
     const saved = libraryById.get(book.id);
     const merged = saved ? { ...book, ...saved } : book;
-    if (pushHistory) detailTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const origin: DetailOrigin = { view, activeQuery, searchInput, scrollY: window.scrollY };
+    if (pushHistory) {
+      detailTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      detailOriginRef.current = origin;
+    }
     if (pushHistory) rememberOpened(merged);
     setSelectedBook(merged);
     setScoreDraft(merged.rating ?? 80);
@@ -1413,7 +1456,7 @@ export default function HomePage() {
     if (settings.detailMode !== "modal" && pushHistory) {
       const hash = bookDetailHash(merged.id);
       if (window.location.hash !== hash) {
-        window.history.pushState({ folioDetail: true, folioBook: merged }, "", hash);
+        window.history.pushState({ folioDetail: true, folioBook: merged, folioOrigin: origin }, "", hash);
       }
       window.requestAnimationFrame(() => detailHeadingRef.current?.focus());
     }
@@ -1421,7 +1464,7 @@ export default function HomePage() {
     if (merged.description || !merged.id.startsWith("/works/")) return;
     const cachedDetail = DETAIL_CACHE.get(merged.id);
     if (cachedDetail) {
-      setSelectedBook({ ...merged, ...cachedDetail });
+      if (detailRequestRef.current === detailRequestId) setSelectedBook({ ...merged, ...cachedDetail });
       return;
     }
     setDetailLoading(true);
@@ -1442,11 +1485,11 @@ export default function HomePage() {
         description: detailed.description,
         subjects: detailed.subjects,
       });
-      setSelectedBook(detailed);
+      if (detailRequestRef.current === detailRequestId) setSelectedBook(detailed);
     } catch {
       // Search metadata is still enough to use every tracker action.
     } finally {
-      setDetailLoading(false);
+      if (detailRequestRef.current === detailRequestId) setDetailLoading(false);
     }
   }
 
@@ -1596,6 +1639,20 @@ export default function HomePage() {
     const raw = searchInput.trim();
     if (!raw) return;
 
+    detailRequestRef.current += 1;
+    detailOriginRef.current = null;
+    setSelectedBook(null);
+    setDetailLoading(false);
+    setEditMode(null);
+    setCoverEditorOpen(false);
+    setCoverError("");
+    if (bookIdFromHash(window.location.hash)) {
+      window.history.replaceState(
+        { folioView: "search", folioQuery: raw },
+        "",
+        `${window.location.pathname}${window.location.search}`,
+      );
+    }
     setView("search");
     setActiveQuery(raw);
     rememberSearch(raw);
@@ -2419,7 +2476,7 @@ export default function HomePage() {
           <div className="settings-card-heading"><span><ListPlus size={19} /></span><div><h2>Listas personales</h2><p>Una función opcional para crear colecciones propias sin cambiar el estado de lectura.</p></div></div>
           <div className="setting-row">
             <div><strong>Activar Listas</strong><span>Agrega el icono Listas al panel izquierdo y controles dentro del detalle de cada libro.</span><SettingPreview kind="lists" label={settings.enableLists ? "Visible" : "Oculta"} /></div>
-            <div className="segmented-control"><button className={!settings.enableLists ? "active" : ""} onClick={() => setSettings({ ...settings, enableLists: false })}>Desactivadas</button><button className={settings.enableLists ? "active" : ""} onClick={() => setSettings({ ...settings, enableLists: true })}>Activadas</button></div>
+            <div className="segmented-control"><button type="button" className={!settings.enableLists ? "active" : ""} onClick={() => setListsEnabled(false)} aria-pressed={!settings.enableLists}>Ocultar</button><button type="button" className={settings.enableLists ? "active" : ""} onClick={() => setListsEnabled(true)} aria-pressed={settings.enableLists}>Mostrar</button></div>
           </div>
           {settings.enableLists && <>
             <div className="setting-row"><div><strong>Vista de libros</strong><span>Cambia cómo se muestran los títulos dentro de una lista.</span><SettingPreview kind="list-display" /></div><div className="segmented-control"><button className={settings.listDisplay === "grid" ? "active" : ""} onClick={() => setSettings({ ...settings, listDisplay: "grid" })}>Portadas</button><button className={settings.listDisplay === "compact" ? "active" : ""} onClick={() => setSettings({ ...settings, listDisplay: "compact" })}>Compacta</button></div></div>
@@ -2481,7 +2538,7 @@ export default function HomePage() {
 
         <section className="settings-card settings-about">
           <div className="settings-card-heading"><span><CircleAlert size={19} /></span><div><h2>Acerca de Folio</h2><p>Un tracker privado y sin cuentas.</p></div></div>
-          <div className="about-lines"><span>Catálogo activo</span><strong>{CATALOG_PROVIDER_INFO[settings.catalogProvider].name}</strong><span>Recomendaciones</span><strong>{settings.showRecommendations ? (settings.recommendationMode === "basic" ? "Personalizadas" : "IA local") : "Ocultas"}</strong><span>Listas</span><strong>{settings.enableLists ? `${customLists.length} creadas` : "Desactivadas"}</strong><span>Extensiones</span><strong>{extensions.filter((extension) => extension.enabled).length} activas</strong><span>Almacenamiento</span><strong>Solo en este dispositivo</strong><span>Versión</span><strong>1.4.1</strong></div>
+          <div className="about-lines"><span>Catálogo activo</span><strong>{CATALOG_PROVIDER_INFO[settings.catalogProvider].name}</strong><span>Recomendaciones</span><strong>{settings.showRecommendations ? (settings.recommendationMode === "basic" ? "Personalizadas" : "IA local") : "Ocultas"}</strong><span>Listas</span><strong>{settings.enableLists ? `${customLists.length} creadas` : "Desactivadas"}</strong><span>Extensiones</span><strong>{extensions.filter((extension) => extension.enabled).length} activas</strong><span>Almacenamiento</span><strong>Solo en este dispositivo</strong><span>Versión</span><strong>1.4.2</strong></div>
         </section>
       </div>
     );
@@ -2706,7 +2763,18 @@ export default function HomePage() {
           </div>
           <form className="search-form" onSubmit={submitSearch} role="search">
             <button type="submit" className="search-submit" aria-label={`Buscar con ${CATALOG_PROVIDER_INFO[settings.catalogProvider].name}`}><Search size={18} /></button>
-            <input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="Buscar por título, autor o ISBN" aria-label="Buscar libros" />
+            <input
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }}
+              enterKeyHint="search"
+              placeholder="Buscar por título, autor o ISBN"
+              aria-label="Buscar libros"
+            />
             {searchInput && <button type="button" onClick={() => setSearchInput("")} aria-label="Borrar búsqueda"><X size={16} /></button>}
             <kbd>Enter</kbd>
           </form>
