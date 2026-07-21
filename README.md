@@ -9,10 +9,18 @@ Folio es un Book Tracker local, privado y minimalista. Permite buscar títulos e
 - listas de “Por leer” y “Abandonados”;
 - cronograma filtrado por año;
 - búsqueda por título, autor, ISBN o enlace de Open Library;
-- preferencias de tipografía, tamaño y color de acento;
-- exportación completa en JSON, lista en CSV e importación de copias JSON.
+- portadas personalizadas mediante archivo, enlace o sugerencias de otras ediciones;
+- detalle configurable como modal o página completa con historial del navegador;
+- temas, tipografías, densidad, acentos, notas, tarjetas, esquinas y movimiento configurables;
+- exportación completa en JSON v2 —incluidas las portadas locales—, lista en CSV e importación de copias JSON v1 y v2.
 
-Los libros y ajustes se guardan únicamente en el almacenamiento local del navegador de este equipo. Conviene exportar una copia JSON de vez en cuando.
+Los libros, ajustes y portadas se guardan únicamente en el almacenamiento local del navegador de este equipo. Conviene exportar una copia JSON de vez en cuando.
+
+## Cambiar una portada
+
+Abre un libro guardado y haz doble clic sobre su portada, o usa el botón **Cambiar portada**. Puedes seleccionar una imagen local de hasta 10 MB, pegar un enlace HTTP/HTTPS o elegir una de las portadas sugeridas por Open Library. La portada original siempre se puede restaurar.
+
+Desde **Configuración** puedes decidir si los libros se abren en una ventana o en una página completa, además de personalizar el tema, el color de las notas, las transiciones y el estilo general de Folio.
 
 ## Ejecutar en local
 

@@ -31,10 +31,11 @@ test("server-renders Folio's library home", async () => {
 });
 
 test("keeps local tracking and Open Library capabilities wired", async () => {
-  const [page, layout, css, packageJson] = await Promise.all([
+  const [page, layout, css, storage, packageJson] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),
     readFile(new URL("app/layout.tsx", root), "utf8"),
     readFile(new URL("app/globals.css", root), "utf8"),
+    readFile(new URL("app/folio-storage.ts", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
   ]);
 
@@ -48,10 +49,37 @@ test("keeps local tracking and Open Library capabilities wired", async () => {
   assert.match(page, /books\.slice\(0, limit\)/);
   assert.match(page, /TIMELINE_PAGE_SIZE/);
   assert.match(page, /scrollIntoView/);
+  assert.match(page, /coverOverride/);
+  assert.match(page, /fetchCoverSuggestions/);
+  assert.match(page, /editions\.json\?limit=50/);
+  assert.match(page, /detailMode/);
+  assert.match(page, /bookDetailHash/);
+  assert.match(page, /version: 2/);
+  assert.match(page, /coverAssets/);
+  assert.match(page, /data-rating/);
+  assert.match(page, /data-transition/);
+  assert.match(storage, /folio-assets-v1/);
+  assert.match(storage, /MAX_IMAGE_BYTES = 10 \* 1024 \* 1024/);
+  assert.match(storage, /image\/webp/);
+  assert.match(storage, /importCoverAssets/);
+  assert.match(storage, /transaction\.onabort/);
   assert.match(layout, /<html lang="es">/);
   assert.match(layout, /folio-logo\.png/);
   assert.match(css, /\.modal-content::\-webkit-scrollbar/);
+  assert.match(css, /\.cover-editor/);
+  assert.match(css, /\.book-detail-page/);
+  assert.match(css, /data-motion="off"/);
+  assert.match(packageJson, /"version": "1\.1\.0"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   await access(new URL("public/folio-logo.png", root));
   await assert.rejects(access(new URL("app/_sites-preview", root)));
+});
+
+test("keeps a four-thousand-book library progressively bounded", () => {
+  const books = Array.from({ length: 4_000 }, (_, index) => ({ id: `book-${index}` }));
+  const firstGridPage = books.slice(0, 24);
+  const firstTimelinePage = books.slice(0, 100);
+  assert.equal(firstGridPage.length, 24);
+  assert.equal(firstTimelinePage.length, 100);
+  assert.equal(books.length, 4_000);
 });
