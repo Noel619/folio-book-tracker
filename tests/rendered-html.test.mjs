@@ -109,6 +109,13 @@ test("keeps local tracking, catalogs and recommendations wired", async () => {
   assert.match(page, /HESOYAM/);
   assert.match(page, /RADIATION_PARTICLES/);
   assert.match(page, /setRecommendationsEnabled/);
+  assert.match(page, /manualOrder/);
+  assert.match(page, /timelineOrder/);
+  assert.match(page, /sortableBookProps/);
+  assert.match(page, /reorderSavedBooks/);
+  assert.match(page, /Less talk\.\.\. more action\./);
+  assert.match(page, /builtin-less-talk-radio/);
+  assert.match(page, /Guía de creación/);
   assert.match(page, /data-background/);
   assert.match(page, /data-metadata/);
   assert.match(catalog, /openlibrary\.org\/search\.json/);
@@ -144,7 +151,7 @@ test("keeps local tracking, catalogs and recommendations wired", async () => {
   assert.match(css, /\.book-detail-full/);
   assert.match(css, /\.lists-page/);
   assert.match(css, /\.preview-scenes/);
-  assert.match(packageJson, /"version": "1\.5\.0"/);
+  assert.match(packageJson, /"version": "1\.6\.0"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   await access(new URL("public/folio-logo.png", root));
   await assert.rejects(access(new URL("app/_sites-preview", root)));
@@ -157,6 +164,23 @@ test("keeps a four-thousand-book library progressively bounded", () => {
   assert.equal(firstGridPage.length, 24);
   assert.equal(firstTimelinePage.length, 100);
   assert.equal(books.length, 4_000);
+});
+
+test("ships a Finder-ready macOS application bundle", async () => {
+  const [launcher, plist, icon] = await Promise.all([
+    readFile(new URL("Folio.app/Contents/MacOS/Folio", root), "utf8"),
+    readFile(new URL("Folio.app/Contents/Info.plist", root), "utf8"),
+    readFile(new URL("Folio.app/Contents/Resources/Folio.icns", root)),
+  ]);
+  assert.match(launcher, /^#!\/bin\/zsh/);
+  assert.match(launcher, /latest-v22\.x\/SHASUMS256\.txt/);
+  assert.match(launcher, /shasum -a 256/);
+  assert.match(launcher, /osascript/);
+  assert.match(plist, /<string>com\.folio\.booktracker<\/string>/);
+  assert.match(plist, /<string>1\.6\.0<\/string>/);
+  assert.equal(icon.subarray(0, 4).toString("ascii"), "icns");
+  await access(new URL("Folio-macOS.zip", root));
+  await access(new URL("INSTALAR EN MAC.md", root));
 });
 
 test("cleans noisy edition titles and keeps translation matching wired", async () => {

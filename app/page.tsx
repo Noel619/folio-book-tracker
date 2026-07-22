@@ -32,6 +32,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Radio,
   RotateCcw,
   Search,
   Settings,
@@ -43,6 +44,7 @@ import {
   X,
 } from "lucide-react";
 import { type CSSProperties, ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { DragEvent as ReactDragEvent } from "react";
 import {
   type CoverAssetExport,
   deleteCoverAsset,
@@ -95,7 +97,9 @@ type RecommendationMode = "basic" | "local-ai";
 type RecommendationDiversity = "focused" | "balanced" | "broad";
 type ListDisplayChoice = "grid" | "compact";
 type ListSortChoice = "manual" | "title" | "rating";
-type ExtensionIconChoice = "focus" | "gallery" | "compact" | "night" | "code";
+type ExtensionIconChoice = "focus" | "gallery" | "compact" | "night" | "radio" | "code";
+type BookOrderField = "manualOrder" | "timelineOrder";
+type BookDragState = { sourceId: string; targetId: string; surface: string };
 
 type CustomList = {
   id: string;
@@ -144,6 +148,8 @@ type Book = CatalogBook & {
   recommendationMatch?: number;
   recommendationKind?: "fresh" | "series" | "text";
   recommendationSeedKind?: "text";
+  manualOrder?: number;
+  timelineOrder?: number;
 };
 
 type AppSettings = {
@@ -324,6 +330,18 @@ const BUILT_IN_EXTENSIONS: FolioExtension[] = [
     createdAt: 4,
     updatedAt: 4,
   },
+  {
+    id: "builtin-less-talk-radio",
+    name: "Less talk... more action.",
+    description: "Una radio lofi tranquila basada en la selección de YouTube indicada por Folio. Requiere conexión a internet.",
+    icon: "radio",
+    builtIn: true,
+    enabled: false,
+    css: "",
+    script: "",
+    createdAt: 5,
+    updatedAt: 5,
+  },
 ];
 
 const BUILT_IN_EXTENSION_IDS = new Set(BUILT_IN_EXTENSIONS.map((extension) => extension.id));
@@ -341,6 +359,33 @@ function mergeBuiltInExtensions(value: unknown): FolioExtension[] {
     .filter((extension) => !BUILT_IN_EXTENSION_IDS.has(extension.id))
     .map((extension) => ({ ...extension, icon: extension.icon || "code" as const, builtIn: false }));
   return [...builtIns, ...custom];
+}
+
+function sortStatusBooks(books: Book[], status: Status) {
+  const hasManualOrder = books.some((book) => Number.isFinite(book.manualOrder));
+  return [...books].sort((left, right) => {
+    if (hasManualOrder) {
+      const leftOrder = Number.isFinite(left.manualOrder) ? left.manualOrder as number : Number.MAX_SAFE_INTEGER;
+      const rightOrder = Number.isFinite(right.manualOrder) ? right.manualOrder as number : Number.MAX_SAFE_INTEGER;
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+    }
+    if (status === "read") {
+      const yearDifference = (right.readYear || 0) - (left.readYear || 0);
+      if (yearDifference) return yearDifference;
+    }
+    return (right.addedAt || 0) - (left.addedAt || 0);
+  });
+}
+
+function sortTimelineBooks(books: Book[]) {
+  const hasTimelineOrder = books.some((book) => Number.isFinite(book.timelineOrder));
+  if (!hasTimelineOrder) return books;
+  return [...books].sort((left, right) => {
+    const leftOrder = Number.isFinite(left.timelineOrder) ? left.timelineOrder as number : Number.MAX_SAFE_INTEGER;
+    const rightOrder = Number.isFinite(right.timelineOrder) ? right.timelineOrder as number : Number.MAX_SAFE_INTEGER;
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+    return (left.manualOrder ?? Number.MAX_SAFE_INTEGER) - (right.manualOrder ?? Number.MAX_SAFE_INTEGER);
+  });
 }
 
 const EXTENSION_SETTING_VALUES: Partial<Record<keyof AppSettings, readonly unknown[]>> = {
@@ -459,6 +504,7 @@ const EXTENSION_ICON_COMPONENTS: Record<ExtensionIconChoice, typeof Code2> = {
   gallery: ImagePlus,
   compact: Library,
   night: Sparkles,
+  radio: Radio,
   code: Code2,
 };
 
@@ -1074,6 +1120,7 @@ export default function HomePage() {
   const [listColorDraft, setListColorDraft] = useState<AccentChoice>("violet");
   const [pendingListDelete, setPendingListDelete] = useState("");
   const [extensionDraft, setExtensionDraft] = useState<FolioExtension | null>(null);
+  const [extensionGuideOpen, setExtensionGuideOpen] = useState(false);
   const [pendingExtensionDelete, setPendingExtensionDelete] = useState<string | null>(null);
   const [extensionVariables, setExtensionVariables] = useState<Record<string, string>>({});
   const [extensionClasses, setExtensionClasses] = useState<string[]>([]);
@@ -1093,6 +1140,8 @@ export default function HomePage() {
   const [timelineYear, setTimelineYear] = useState<number | "all">("all");
   const [timelineLimit, setTimelineLimit] = useState(TIMELINE_PAGE_SIZE);
   const [gridLimits, setGridLimits] = useState<Record<string, number>>({});
+  const [bookDrag, setBookDrag] = useState<BookDragState | null>(null);
+  const [radioPlaybackKey, setRadioPlaybackKey] = useState(0);
   const [toast, setToast] = useState("");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [coverEditorOpen, setCoverEditorOpen] = useState(false);
@@ -1123,6 +1172,7 @@ export default function HomePage() {
   const detailRequestRef = useRef(0);
   const historyInitializedRef = useRef(false);
   const recommendationSectionRef = useRef<HTMLElement>(null);
+  const dragJustEndedRef = useRef(false);
 
   const restoreBookDetailOrigin = useCallback(() => {
     const origin = detailOriginRef.current;
@@ -1298,13 +1348,13 @@ export default function HomePage() {
     LOCAL_COVER_URL_CACHE.clear();
   }, []);
 
-  const reading = useMemo(() => library.filter((book) => book.status === "reading"), [library]);
+  const reading = useMemo(() => sortStatusBooks(library.filter((book) => book.status === "reading"), "reading"), [library]);
   const read = useMemo(
-    () => library.filter((book) => book.status === "read").sort((a, b) => (b.readYear || 0) - (a.readYear || 0)),
+    () => sortStatusBooks(library.filter((book) => book.status === "read"), "read"),
     [library],
   );
-  const wishlist = useMemo(() => library.filter((book) => book.status === "wishlist"), [library]);
-  const abandoned = useMemo(() => library.filter((book) => book.status === "abandoned"), [library]);
+  const wishlist = useMemo(() => sortStatusBooks(library.filter((book) => book.status === "wishlist"), "wishlist"), [library]);
+  const abandoned = useMemo(() => sortStatusBooks(library.filter((book) => book.status === "abandoned"), "abandoned"), [library]);
   const libraryById = useMemo(() => new Map(library.map((book) => [book.id, book] as const)), [library]);
   const selectedCustomList = useMemo(
     () => customLists.find((list) => list.id === selectedListId) || customLists[0] || null,
@@ -1886,11 +1936,14 @@ export default function HomePage() {
 
   function saveStatus(status: Status, patch: Partial<Book> = {}) {
     if (!selectedBook) return;
+    const previousStatus = libraryById.get(selectedBook.id)?.status;
     const saved: Book = {
       ...selectedBook,
       ...patch,
       status,
       addedAt: selectedBook.addedAt ?? Date.now(),
+      manualOrder: previousStatus === status ? selectedBook.manualOrder : undefined,
+      timelineOrder: previousStatus === "read" && status === "read" ? selectedBook.timelineOrder : undefined,
     };
     setLibrary((current) => {
       const exists = current.some((book) => book.id === saved.id);
@@ -2108,11 +2161,63 @@ export default function HomePage() {
     notify(`${extension?.name || "Extensión"} eliminada`);
   }
 
+  function reorderSavedBooks(books: Book[], sourceId: string, targetId: string, orderField: BookOrderField) {
+    const orderedIds = books.map((book) => book.id);
+    const sourceIndex = orderedIds.indexOf(sourceId);
+    const targetIndex = orderedIds.indexOf(targetId);
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return;
+    const [movedId] = orderedIds.splice(sourceIndex, 1);
+    orderedIds.splice(targetIndex, 0, movedId);
+    const positions = new Map(orderedIds.map((id, index) => [id, index] as const));
+    setLibrary((current) => current.map((book) => positions.has(book.id) ? { ...book, [orderField]: positions.get(book.id) } : book));
+  }
+
+  function finishBookDrag() {
+    dragJustEndedRef.current = true;
+    setBookDrag(null);
+    window.setTimeout(() => { dragJustEndedRef.current = false; }, 80);
+  }
+
+  function sortableBookProps(book: Book, surface: string, orderedBooks: Book[], orderField: BookOrderField = "manualOrder") {
+    return {
+      draggable: true,
+      title: "Mantén pulsado y arrastra para cambiar la posición",
+      onDragStart: (event: ReactDragEvent<HTMLButtonElement>) => {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", book.id);
+        setBookDrag({ sourceId: book.id, targetId: book.id, surface });
+      },
+      onDragOver: (event: ReactDragEvent<HTMLButtonElement>) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        setBookDrag((current) => current && current.surface === surface && current.targetId !== book.id ? { ...current, targetId: book.id } : current);
+      },
+      onDrop: (event: ReactDragEvent<HTMLButtonElement>) => {
+        event.preventDefault();
+        const sourceId = event.dataTransfer.getData("text/plain") || bookDrag?.sourceId;
+        if (sourceId) reorderSavedBooks(orderedBooks, sourceId, book.id, orderField);
+        finishBookDrag();
+      },
+      onDragEnd: finishBookDrag,
+    };
+  }
+
+  function sortableBookClass(baseClass: string, book: Book, surface: string) {
+    const dragging = bookDrag?.surface === surface && bookDrag.sourceId === book.id;
+    const target = bookDrag?.surface === surface && bookDrag.targetId === book.id && bookDrag.sourceId !== book.id;
+    return `${baseClass} sortable-book${dragging ? " dragging" : ""}${target ? " drag-target" : ""}`;
+  }
+
+  function openSortableBook(book: Book) {
+    if (!dragJustEndedRef.current) openBook(book);
+  }
+
   function renderBookGrid(
     books: Book[],
     empty: { title: string; copy: string },
     resultGrid = false,
     gridKey = "default",
+    sortableSurface?: string,
   ) {
     if (!books.length) return <EmptyState icon={resultGrid ? Search : BookOpen} {...empty} />;
     const limit = gridLimits[gridKey] ?? GRID_PAGE_SIZE;
@@ -2123,7 +2228,13 @@ export default function HomePage() {
           {visibleBooks.map((book) => {
             const savedStatus = statusById.get(book.id);
             return (
-              <button className="book-card" key={book.id} onClick={() => openBook(book)} aria-label={`Abrir ${book.title}`}>
+              <button
+                className={sortableSurface ? sortableBookClass("book-card", book, sortableSurface) : "book-card"}
+                key={book.id}
+                onClick={() => sortableSurface ? openSortableBook(book) : openBook(book)}
+                aria-label={`Abrir ${book.title}`}
+                {...(sortableSurface ? sortableBookProps(book, sortableSurface, books) : {})}
+              >
                 <div className="cover-shell">
                   <BookCover book={book} size="M" quality={settings.coverQuality} />
                   {savedStatus && (
@@ -2172,7 +2283,13 @@ export default function HomePage() {
             <>
               <div className="reading-row">
                 {visibleReading.map((book, index) => (
-                  <button className="reading-card" key={book.id} onClick={() => openBook(book)}>
+                  <button
+                    className={sortableBookClass("reading-card", book, "home-reading")}
+                    key={book.id}
+                    onClick={() => openSortableBook(book)}
+                    aria-label={`Abrir ${book.title}`}
+                    {...sortableBookProps(book, "home-reading", reading)}
+                  >
                     <BookCover book={book} size="M" priority={index < 3} quality={settings.coverQuality} />
                     <div className="reading-card-copy">
                       <span className="reading-label"><BookOpen size={13} /> En curso</span>
@@ -2201,7 +2318,7 @@ export default function HomePage() {
             <div><span className="section-index">02</span><h2>Libros leídos</h2></div>
             <button className="text-button" onClick={() => navigate("timeline")}>Ver cronograma <ChevronRight size={15} /></button>
           </div>
-          {renderBookGrid(read, { title: "Tu estante está esperando", copy: "Los libros que marques como leídos aparecerán aquí." }, false, "home-read")}
+          {renderBookGrid(read, { title: "Tu estante está esperando", copy: "Los libros que marques como leídos aparecerán aquí." }, false, "home-read", "home-read")}
         </section>
 
         {settings.showRecommendations && <section className="content-section recommendations-section" ref={recommendationSectionRef}>
@@ -2238,7 +2355,8 @@ export default function HomePage() {
   }
 
   function renderTimeline() {
-    const filteredTimelineBooks = timelineYear === "all" ? read : read.filter((book) => book.readYear === timelineYear);
+    const timelineBooks = timelineYears.flatMap((year) => sortTimelineBooks(read.filter((book) => book.readYear === year)));
+    const filteredTimelineBooks = timelineYear === "all" ? timelineBooks : timelineBooks.filter((book) => book.readYear === timelineYear);
     const visibleTimelineBooks = filteredTimelineBooks.slice(0, timelineLimit);
     const visibleYears = Array.from(new Set(visibleTimelineBooks.map((book) => book.readYear).filter(Boolean) as number[]));
     return (
@@ -2254,13 +2372,21 @@ export default function HomePage() {
         </div>
         {visibleYears.length ? visibleYears.map((year) => {
           const yearBooks = visibleTimelineBooks.filter((book) => book.readYear === year);
+          const allYearBooks = sortTimelineBooks(read.filter((book) => book.readYear === year));
+          const timelineSurface = `timeline-${year}`;
           const totalYearBooks = timelineYearCounts.get(year) || yearBooks.length;
           return (
             <div className="timeline-year" key={year}>
               <div className="year-marker"><strong>{year}</strong><span>{totalYearBooks.toLocaleString("es")} {totalYearBooks === 1 ? "lectura" : "lecturas"}</span></div>
               <div className="timeline-list">
                 {yearBooks.map((book, index) => (
-                  <button className="timeline-book" key={book.id} onClick={() => openBook(book)}>
+                  <button
+                    className={sortableBookClass("timeline-book", book, timelineSurface)}
+                    key={book.id}
+                    onClick={() => openSortableBook(book)}
+                    aria-label={`Abrir ${book.title}`}
+                    {...sortableBookProps(book, timelineSurface, allYearBooks, "timelineOrder")}
+                  >
                     <span className="timeline-number">{String(index + 1).padStart(2, "0")}</span>
                     <BookCover book={book} size="S" quality={settings.coverQuality} />
                     <span className="timeline-info"><strong>{book.title}</strong><small>{book.authors[0]} · {book.publishedYear || "s. f."}</small></span>
@@ -2656,9 +2782,29 @@ export default function HomePage() {
           <div className="settings-card-heading extension-heading">
             <span><Code2 size={19} /></span>
             <div><h2>Extensiones de Folio</h2><p>Personaliza la interfaz con CSS y automatizaciones locales aisladas.</p></div>
-            <button className="new-extension" onClick={createExtension}><Plus size={15} /> Nueva</button>
+            <div className="extension-heading-actions">
+              <button className="extension-guide-button" onClick={() => setExtensionGuideOpen((open) => !open)} aria-expanded={extensionGuideOpen}><BookOpen size={15} /> Guía</button>
+              <button className="new-extension" onClick={createExtension}><Plus size={15} /> Nueva</button>
+            </div>
           </div>
           <div className="extension-safety"><CircleAlert size={16} /><span>Usa código que entiendas. El JavaScript se ejecuta aislado y solo puede cambiar opciones mediante la API permitida; el CSS sí modifica la apariencia de Folio.</span></div>
+
+          {extensionGuideOpen && (
+            <div className="extension-guide" role="region" aria-label="Guía para crear extensiones de Folio">
+              <div className="extension-guide-heading"><div><span>Guía de creación</span><h3>De una idea a una extensión activa</h3><p>Las extensiones personalizan Folio sin tocar los archivos del proyecto. Crea una, prueba sus cambios y actívala o desactívala cuando quieras.</p></div><button onClick={() => setExtensionGuideOpen(false)} aria-label="Cerrar guía"><X size={16} /></button></div>
+              <div className="extension-guide-grid">
+                <article><strong>1. Crea y nombra</strong><p>Pulsa <b>+ Nueva</b>, elige un nombre reconocible y escribe CSS, JavaScript o ambos. Guardar no impide desactivarla después.</p></article>
+                <article><strong>2. Cambia la apariencia</strong><p>Usa selectores estables como <code>.book-card</code>, <code>.reading-card</code>, <code>.timeline-book</code>, <code>.sidebar</code> o <code>.topbar</code>.</p></article>
+                <article><strong>3. Automatiza con seguridad</strong><p>El código se ejecuta aislado. Puede mostrar avisos, ajustar opciones permitidas, cambiar variables visuales o añadir una clase controlada.</p></article>
+                <article><strong>4. Prueba y corrige</strong><p>Guarda, activa el interruptor y revisa Inicio, detalle y móvil. Si algo no queda bien, desactiva la extensión y vuelve a editarla.</p></article>
+              </div>
+              <div className="extension-guide-examples">
+                <div><span>Ejemplo CSS</span><pre>{`.book-card .book-cover {\n  filter: saturate(1.12);\n}`}</pre></div>
+                <div><span>Ejemplo JavaScript</span><pre>{`folio.setSetting("accent", "sage");\nfolio.notify("Estilo aplicado");`}</pre></div>
+              </div>
+              <div className="extension-guide-api"><strong>API disponible</strong><code>folio.notify(mensaje)</code><code>folio.setSetting(clave, valor)</code><code>folio.setVariable(variable, valor)</code><code>folio.addClass(&quot;ext-mi-clase&quot;)</code><span>El estado de solo lectura está disponible en <code>folio.context</code>. El espacio aislado no puede leer tu biblioteca completa, archivos, contraseñas ni contenido de otras páginas.</span></div>
+            </div>
+          )}
 
           {extensions.length ? (
             <div className="extension-list">
@@ -2709,7 +2855,7 @@ export default function HomePage() {
 
         <section className="settings-card settings-about">
           <div className="settings-card-heading"><span><CircleAlert size={19} /></span><div><h2>Acerca de Folio</h2><p>Un tracker privado y sin cuentas.</p></div></div>
-          <div className="about-lines"><span>Catálogo activo</span><strong>{CATALOG_PROVIDER_INFO[settings.catalogProvider].name}</strong><span>Recomendaciones</span><strong>{settings.showRecommendations ? (settings.recommendationMode === "basic" ? "Personalizadas" : "IA local") : "Ocultas"}</strong><span>Listas</span><strong>{settings.enableLists ? `${customLists.length} creadas` : "Desactivadas"}</strong><span>Extensiones</span><strong>{extensions.filter((extension) => extension.enabled).length} activas</strong><span>Almacenamiento</span><strong>Solo en este dispositivo</strong><span>Versión</span><strong>1.5.0</strong></div>
+          <div className="about-lines"><span>Catálogo activo</span><strong>{CATALOG_PROVIDER_INFO[settings.catalogProvider].name}</strong><span>Recomendaciones</span><strong>{settings.showRecommendations ? (settings.recommendationMode === "basic" ? "Personalizadas" : "IA local") : "Ocultas"}</strong><span>Listas</span><strong>{settings.enableLists ? `${customLists.length} creadas` : "Desactivadas"}</strong><span>Extensiones</span><strong>{extensions.filter((extension) => extension.enabled).length} activas</strong><span>Almacenamiento</span><strong>Solo en este dispositivo</strong><span>Versión</span><strong>1.6.0</strong></div>
         </section>
       </div>
     );
@@ -2739,8 +2885,8 @@ export default function HomePage() {
     if (view === "lists") return renderLists();
     if (view === "settings") return renderSettings();
     if (view === "search") return renderSearch();
-    if (view === "wishlist") return renderBookGrid(wishlist, { title: "Tu lista está vacía", copy: "Usa el icono de carpeta al descubrir un libro que quieras leer después." }, false, "wishlist");
-    return renderBookGrid(abandoned, { title: "Ningún libro abandonado", copy: "Si un libro no era para este momento, puedes dejarlo aquí sin culpa." }, false, "abandoned");
+    if (view === "wishlist") return renderBookGrid(wishlist, { title: "Tu lista está vacía", copy: "Usa el icono de carpeta al descubrir un libro que quieras leer después." }, false, "wishlist", "wishlist");
+    return renderBookGrid(abandoned, { title: "Ningún libro abandonado", copy: "Si un libro no era para este momento, puedes dejarlo aquí sin culpa." }, false, "abandoned", "abandoned");
   }
 
   const selectedSaved = selectedBook ? libraryById.has(selectedBook.id) : false;
@@ -2877,6 +3023,8 @@ export default function HomePage() {
     );
   }
 
+  const radioExtension = extensions.find((extension) => extension.id === "builtin-less-talk-radio");
+
   return (
     <div
       className={`app-shell ${extensionClasses.join(" ")}`}
@@ -2917,6 +3065,22 @@ export default function HomePage() {
           srcDoc={extensionRuntimeDocument(extension, settings, library.length)}
         />
       ))}
+      {radioExtension?.enabled && (
+        <aside className="folio-radio" aria-label="Radio Less talk... more action.">
+          <iframe
+            key={radioPlaybackKey}
+            title="Reproductor de Less talk... more action."
+            src="https://www.youtube-nocookie.com/embed/9kzE8isXlQY?autoplay=1&loop=1&playlist=9kzE8isXlQY&controls=0&playsinline=1&rel=0"
+            allow="autoplay; encrypted-media"
+            referrerPolicy="strict-origin-when-cross-origin"
+          />
+          <span className="folio-radio-logo"><Radio size={17} /></span>
+          <span className="folio-radio-copy"><strong>Less talk... more action.</strong><small>Radio lofi · YouTube</small></span>
+          <button onClick={() => setRadioPlaybackKey((value) => value + 1)} title="Iniciar o reiniciar la radio">Reproducir</button>
+          <a href="https://www.youtube.com/watch?v=9kzE8isXlQY&list=RD9kzE8isXlQY&start_radio=1" target="_blank" rel="noreferrer">YouTube</a>
+          <button className="folio-radio-close" onClick={() => toggleExtension(radioExtension)} aria-label="Detener y desactivar la radio"><X size={14} /></button>
+        </aside>
+      )}
       <aside className={`sidebar ${mobileNavOpen ? "mobile-open" : ""}`}>
         <button className="brand" onClick={() => navigate("home")} aria-label="Folio, ir al inicio"><span className="brand-mark" aria-hidden="true" /><strong>Folio</strong></button>
         <nav aria-label="Navegación principal">

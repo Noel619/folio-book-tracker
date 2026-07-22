@@ -1,0 +1,157 @@
+#!/bin/zsh
+
+set -u
+
+APP_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+APP_URL="http://127.0.0.1:3000/"
+SUPPORT_DIR="$HOME/Library/Application Support/Folio"
+LOG_DIR="$HOME/Library/Logs/Folio"
+LOG_FILE="$LOG_DIR/server.log"
+PLATFORM_FILE="$SUPPORT_DIR/platform-v1"
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+mkdir -p "$SUPPORT_DIR" "$LOG_DIR"
+
+show_error() {
+  /usr/bin/osascript - "$1" <<'APPLESCRIPT'
+on run argv
+  display dialog (item 1 of argv) with title "Folio" buttons {"Aceptar"} default button "Aceptar" with icon stop
+end run
+APPLESCRIPT
+}
+
+show_notice() {
+  /usr/bin/osascript - "$1" <<'APPLESCRIPT'
+on run argv
+  display notification (item 1 of argv) with title "Folio"
+end run
+APPLESCRIPT
+}
+
+prepare_portable_node() {
+  choice=$(/usr/bin/osascript <<'APPLESCRIPT'
+display dialog "Folio necesita un pequeño componente gratuito para funcionar. Puede prepararlo automáticamente dentro de tu carpeta de usuario, sin Terminal ni permisos de administrador." with title "Preparar Folio" buttons {"Cancelar", "Preparar automáticamente"} default button "Preparar automáticamente" with icon caution
+button returned of result
+APPLESCRIPT
+  )
+  if [ "$choice" != "Preparar automáticamente" ]; then
+    return 1
+  fi
+
+  case "$(uname -m)" in
+    arm64) NODE_PLATFORM="darwin-arm64" ;;
+    x86_64) NODE_PLATFORM="darwin-x64" ;;
+    *) show_error "Este modelo de Mac no es compatible con el componente automático de Folio."; return 1 ;;
+  esac
+
+  show_notice "Descargando el componente oficial y verificando su integridad."
+  MANIFEST="$(/usr/bin/curl --silent --show-error --fail --location --max-time 30 "https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt" 2>>"$LOG_FILE")"
+  ARCHIVE_NAME="$(printf '%s\n' "$MANIFEST" | /usr/bin/awk -v platform="$NODE_PLATFORM.tar.gz" '$2 ~ platform "$" {print $2; exit}')"
+  EXPECTED_HASH="$(printf '%s\n' "$MANIFEST" | /usr/bin/awk -v platform="$NODE_PLATFORM.tar.gz" '$2 ~ platform "$" {print $1; exit}')"
+  if [ -z "$ARCHIVE_NAME" ] || [ -z "$EXPECTED_HASH" ]; then
+    show_error "No pudimos localizar el componente oficial para este Mac. Comprueba la conexión e inténtalo de nuevo."
+    return 1
+  fi
+
+  DOWNLOAD_FILE="$(/usr/bin/mktemp "$SUPPORT_DIR/node-download.XXXXXX")"
+  if ! /usr/bin/curl --silent --show-error --fail --location --max-time 300 "https://nodejs.org/dist/latest-v22.x/$ARCHIVE_NAME" --output "$DOWNLOAD_FILE" 2>>"$LOG_FILE"; then
+    /bin/rm -f "$DOWNLOAD_FILE"
+    show_error "No se pudo descargar el componente oficial de Folio. Comprueba la conexión e inténtalo de nuevo."
+    return 1
+  fi
+
+  ACTUAL_HASH="$(/usr/bin/shasum -a 256 "$DOWNLOAD_FILE" | /usr/bin/awk '{print $1}')"
+  if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+    /bin/rm -f "$DOWNLOAD_FILE"
+    show_error "La verificación de seguridad falló. Folio no ejecutará el archivo descargado."
+    return 1
+  fi
+
+  RUNTIME_DIR="$SUPPORT_DIR/${ARCHIVE_NAME%.tar.gz}"
+  /bin/mkdir -p "$RUNTIME_DIR"
+  if ! /usr/bin/tar -xzf "$DOWNLOAD_FILE" -C "$RUNTIME_DIR" --strip-components=1 >>"$LOG_FILE" 2>&1; then
+    /bin/rm -f "$DOWNLOAD_FILE"
+    show_error "No se pudo preparar el componente de Folio. Consulta Library/Logs/Folio/server.log."
+    return 1
+  fi
+  /bin/rm -f "$DOWNLOAD_FILE"
+  NODE_BIN="$RUNTIME_DIR/bin/node"
+  NPM_BIN="$RUNTIME_DIR/bin/npm"
+  if [ ! -x "$NODE_BIN" ] || [ ! -x "$NPM_BIN" ]; then
+    show_error "El componente descargado está incompleto. Consulta Library/Logs/Folio/server.log."
+    return 1
+  fi
+  printf '%s' "$RUNTIME_DIR" >"$SUPPORT_DIR/runtime-path"
+  export PATH="$RUNTIME_DIR/bin:$PATH"
+  return 0
+}
+
+if /usr/bin/curl --silent --fail --max-time 1 "$APP_URL" >/dev/null 2>&1; then
+  /usr/bin/open "$APP_URL"
+  exit 0
+fi
+
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+NPM_BIN="$(command -v npm 2>/dev/null || true)"
+PORTABLE_RUNTIME="$(cat "$SUPPORT_DIR/runtime-path" 2>/dev/null || true)"
+case "$PORTABLE_RUNTIME" in
+  "$SUPPORT_DIR"/node-v22.*-darwin-*)
+    if [ -x "$PORTABLE_RUNTIME/bin/node" ] && [ -x "$PORTABLE_RUNTIME/bin/npm" ]; then
+      NODE_BIN="$PORTABLE_RUNTIME/bin/node"
+      NPM_BIN="$PORTABLE_RUNTIME/bin/npm"
+      export PATH="$PORTABLE_RUNTIME/bin:$PATH"
+    fi
+    ;;
+esac
+
+NODE_MAJOR=0
+if [ -n "$NODE_BIN" ]; then
+  NODE_MAJOR="$("$NODE_BIN" -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)"
+fi
+if [ -z "$NODE_BIN" ] || [ -z "$NPM_BIN" ] || [ "$NODE_MAJOR" -lt 22 ]; then
+  if ! prepare_portable_node; then
+    exit 1
+  fi
+fi
+
+if [ ! -f "$APP_ROOT/package.json" ]; then
+  show_error "Folio.app debe permanecer dentro de la carpeta del proyecto Folio. No se encontró package.json junto a la aplicación."
+  exit 1
+fi
+
+cd "$APP_ROOT" || exit 1
+PLATFORM_ID="$(uname -s)-$(uname -m)-$("$NODE_BIN" -p 'process.versions.modules')"
+PREPARED_PLATFORM="$(cat "$PLATFORM_FILE" 2>/dev/null || true)"
+
+if [ ! -d "$APP_ROOT/node_modules" ] || [ "$PREPARED_PLATFORM" != "$PLATFORM_ID" ] || [ ! -f "$APP_ROOT/dist/server/index.js" ]; then
+  show_notice "Preparando la aplicación para este Mac. La primera apertura puede tardar unos minutos."
+  printf '\n[%s] Preparando Folio para %s\n' "$(date)" "$PLATFORM_ID" >>"$LOG_FILE"
+  "$NPM_BIN" install --no-audit --no-fund >>"$LOG_FILE" 2>&1
+  if [ $? -ne 0 ]; then
+    show_error "No se pudieron instalar los componentes de Folio. Comprueba la conexión y consulta Library/Logs/Folio/server.log."
+    exit 1
+  fi
+  "$NPM_BIN" run build >>"$LOG_FILE" 2>&1
+  if [ $? -ne 0 ]; then
+    show_error "No se pudo preparar Folio para macOS. Consulta Library/Logs/Folio/server.log."
+    exit 1
+  fi
+  printf '%s' "$PLATFORM_ID" >"$PLATFORM_FILE"
+fi
+
+printf '\n[%s] Iniciando Folio\n' "$(date)" >>"$LOG_FILE"
+nohup "$NPM_BIN" run start >>"$LOG_FILE" 2>&1 &
+echo $! >"$SUPPORT_DIR/server.pid"
+
+attempt=0
+while [ $attempt -lt 60 ]; do
+  sleep 1
+  if /usr/bin/curl --silent --fail --max-time 1 "$APP_URL" >/dev/null 2>&1; then
+    /usr/bin/open "$APP_URL"
+    exit 0
+  fi
+  attempt=$((attempt + 1))
+done
+
+show_error "Folio tardó demasiado en iniciar. Consulta Library/Logs/Folio/server.log."
+exit 1

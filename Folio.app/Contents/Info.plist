@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>es</string>
+  <key>CFBundleDisplayName</key>
+  <string>Folio</string>
+  <key>CFBundleExecutable</key>
+  <string>Folio</string>
+  <key>CFBundleIconFile</key>
+  <string>Folio.icns</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.folio.booktracker</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Folio</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.6.0</string>
+  <key>CFBundleVersion</key>
+  <string>1.6.0</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>Folio Book Tracker</string>
+</dict>
+</plist>

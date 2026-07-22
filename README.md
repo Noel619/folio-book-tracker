@@ -8,6 +8,7 @@ Folio es un Book Tracker local, privado y minimalista. Permite buscar títulos e
 - historial de libros leídos, año y nota de 0 a 100;
 - listas de “Por leer” y “Abandonados”;
 - cronograma filtrado por año;
+- orden manual persistente arrastrando libros en Seguir leyendo, Leídos, Por leer, Abandonados y dentro de cada año del Cronograma;
 - búsqueda por título, autor, ISBN o enlace de Open Library con proveedor configurable;
 - portadas personalizadas mediante archivo, enlace o sugerencias de otras ediciones;
 - calidad de portada configurable y preferencia por imágenes grandes en tarjetas visibles;
@@ -22,7 +23,7 @@ Folio es un Book Tracker local, privado y minimalista. Permite buscar títulos e
 - filtros de idioma (solo español, solo inglés o ambos con prioridad elegible), exigencia de coincidencia y prioridades para portada y sinopsis;
 - opción para ocultar por completo las recomendaciones de Inicio;
 - previsualizaciones en vivo para cada familia de ajustes visuales y de movimiento;
-- cuatro extensiones visuales integradas y desactivadas inicialmente, además de extensiones locales editables con CSS y una API JavaScript aislada;
+- cinco extensiones integradas y desactivadas inicialmente —incluida una radio lofi—, además de extensiones locales editables con CSS, una guía incorporada y una API JavaScript aislada;
 - exportación completa en JSON v2 —incluidas portadas, listas, extensiones y aprendizaje—, copia separada de configuración, lista en CSV e importación de copias JSON v1 y v2.
 
 Los libros, ajustes y portadas se guardan únicamente en el almacenamiento local del navegador de este equipo. Conviene exportar una copia JSON de vez en cuando.
@@ -38,7 +39,7 @@ Desde **Configuración** puedes decidir si los libros se abren en una ventana, e
 Puedes iniciar Folio sin escribir comandos:
 
 - **Windows:** abre `Folio.exe` con doble clic.
-- **macOS:** abre `Folio.command` con doble clic. La primera vez, si macOS bloquea la apertura, haz clic derecho sobre el archivo y elige **Abrir**. Si el archivo perdió el permiso de ejecución al copiarse, ejecuta una vez `chmod +x Folio.command` desde Terminal.
+- **macOS:** descarga y descomprime `Folio-macOS.zip`, conserva `Folio.app` junto a la carpeta del proyecto y ábrela desde Finder. No abre Terminal. Si el Mac no tiene un entorno compatible, Folio puede preparar automáticamente una copia portátil oficial y verificada, sin permisos de administrador. Al no estar firmada con una cuenta Apple Developer, la primera vez puede ser necesario hacer clic derecho sobre `Folio.app` y elegir **Abrir**. `Folio.command` continúa incluido como alternativa técnica.
 
 Ambos lanzadores inician el servidor local y abren la aplicación en el navegador automáticamente.
 
@@ -74,7 +75,7 @@ Activa **Configuración → Listas personales** para mostrar la nueva sección e
 
 ## Extensiones locales
 
-**Configuración → Extensiones de Folio** incluye Sala de lectura, Galería de portadas, Biblioteca compacta y Tinta nocturna. Todas empiezan desactivadas y pueden encenderse o apagarse sin alterar definitivamente las preferencias. También permite crear, activar, editar y eliminar personalizaciones propias. El CSS se aplica a la interfaz y el JavaScript se ejecuta en un espacio aislado. La API permitida incluye `folio.notify()`, `folio.setSetting()`, `folio.setVariable()` y `folio.addClass()`. Las extensiones se guardan en este dispositivo y también se incluyen en la copia JSON v2. Usa únicamente código que entiendas.
+**Configuración → Extensiones de Folio** incluye Sala de lectura, Galería de portadas, Biblioteca compacta, Tinta nocturna y **Less talk... more action.**. La última monta una radio lofi de YouTube y la detiene por completo al desactivarse. Todas empiezan apagadas. El botón **Guía** explica el flujo de creación, los selectores recomendados y la API disponible. También se pueden crear, activar, editar y eliminar personalizaciones propias. El CSS se aplica a la interfaz y el JavaScript se ejecuta en un espacio aislado. La API permitida incluye `folio.notify()`, `folio.setSetting()`, `folio.setVariable()` y `folio.addClass()`. Las extensiones se guardan en este dispositivo y también se incluyen en la copia JSON v2. Usa únicamente código que entiendas.
 
 ## Distribución para itch.io
 
